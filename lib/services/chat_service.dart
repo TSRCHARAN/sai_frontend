@@ -1,11 +1,12 @@
 import 'dart:convert';
 import 'package:http/http.dart' as http;
+import 'package:flutter_dotenv/flutter_dotenv.dart';
 import 'user_service.dart';
 
 class ChatService {
   // Use 10.0.2.2 for Android Emulator, localhost for iOS/Web
   // For physical device, use your machine's local IP (e.g., 192.168.x.x)
-  static const String baseUrl = "http://192.168.0.1:8000"; 
+  static String get baseUrl => dotenv.env['API_URL'] ?? "http://10.0.2.2:8000"; 
   final UserService _userService = UserService();
 
   Future<Map<String, dynamic>> sendMessage(String message) async {
