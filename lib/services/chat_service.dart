@@ -6,8 +6,7 @@ import 'user_service.dart';
 class ChatService {
   // Use 10.0.2.2 for Android Emulator, localhost for iOS/Web
   // For physical device, use your machine's local IP (e.g., 192.168.x.x)
-  //static String get baseUrl => dotenv.env['API_URL'] ?? "http://10.0.2.2:8000"; 
-  static const String baseUrl = 'https://saibackend-8uc0.onrender.com'; 
+  static String get baseUrl => dotenv.env['API_URL'] ?? "http://10.0.2.2:8000"; 
   final UserService _userService = UserService();
 
   Future<Map<String, dynamic>> sendMessage(String message) async {
