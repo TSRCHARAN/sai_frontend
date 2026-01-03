@@ -2,6 +2,8 @@ import 'dart:convert';
 import 'package:http/http.dart' as http;
 import 'package:flutter_dotenv/flutter_dotenv.dart';
 import 'user_service.dart';
+import '../models/memory.dart';
+import '../models/user_profile.dart';
 
 class ChatService {
   // Use 10.0.2.2 for Android Emulator, localhost for iOS/Web
@@ -89,6 +91,68 @@ class ChatService {
       client.close();
     } catch (e) {
       yield "Network error: $e";
+    }
+  }
+
+  Future<List<Memory>> fetchMemories() async {
+    final userId = await _userService.getUserId();
+    try {
+      final response = await http.get(Uri.parse("$baseUrl/memories/$userId"));
+
+      if (response.statusCode == 200) {
+        final data = jsonDecode(response.body);
+        final List<dynamic> memoriesJson = data['memories'];
+        return memoriesJson.map((json) => Memory.fromJson(json)).toList();
+      } else {
+        throw Exception("Failed to load memories: ${response.statusCode}");
+      }
+    } catch (e) {
+      throw Exception("Network error: $e");
+    }
+  }
+
+  Future<void> deleteMemory(int id) async {
+    try {
+      final response = await http.delete(Uri.parse("$baseUrl/memories/$id"));
+
+      if (response.statusCode != 200) {
+        throw Exception("Failed to delete memory: ${response.statusCode}");
+      }
+    } catch (e) {
+      throw Exception("Network error: $e");
+    }
+  }
+
+  Future<UserProfile> fetchProfile() async {
+    final userId = await _userService.getUserId();
+    try {
+      final response = await http.get(Uri.parse("$baseUrl/profile/$userId"));
+
+      if (response.statusCode == 200) {
+        final data = jsonDecode(response.body);
+        return UserProfile.fromJson(data['profile']);
+      } else {
+        throw Exception("Failed to load profile: ${response.statusCode}");
+      }
+    } catch (e) {
+      throw Exception("Network error: $e");
+    }
+  }
+
+  Future<void> updateProfile(UserProfile profile) async {
+    final userId = await _userService.getUserId();
+    try {
+      final response = await http.post(
+        Uri.parse("$baseUrl/profile/$userId"),
+        headers: {"Content-Type": "application/json"},
+        body: jsonEncode(profile.toJson()),
+      );
+
+      if (response.statusCode != 200) {
+        throw Exception("Failed to update profile: ${response.statusCode}");
+      }
+    } catch (e) {
+      throw Exception("Network error: $e");
     }
   }
 }

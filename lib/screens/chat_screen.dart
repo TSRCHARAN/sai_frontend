@@ -1,10 +1,77 @@
 import 'dart:ui';
+import 'dart:convert';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_markdown/flutter_markdown.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import '../models/chat_message.dart';
 import '../services/chat_service.dart';
+import '../services/notification_service.dart';
+import 'memory_screen.dart';
+import 'profile_screen.dart';
+
+class ChatBackground extends StatelessWidget {
+  final bool isDarkMode;
+
+  const ChatBackground({super.key, required this.isDarkMode});
+
+  @override
+  Widget build(BuildContext context) {
+    final bgStart = isDarkMode ? const Color(0xFF0F172A) : const Color(0xFFF8FAFC);
+    final bgEnd = isDarkMode ? const Color(0xFF1E293B) : const Color(0xFFE2E8F0);
+    final glowColor1 = isDarkMode ? const Color(0xFF3B82F6) : const Color(0xFF60A5FA);
+    final glowColor2 = isDarkMode ? const Color(0xFF8B5CF6) : const Color(0xFFA78BFA);
+
+    return Stack(
+      children: [
+        // 1. Gradient Background
+        Container(
+          decoration: BoxDecoration(
+            gradient: LinearGradient(
+              begin: Alignment.topLeft,
+              end: Alignment.bottomRight,
+              colors: [bgStart, bgEnd],
+            ),
+          ),
+        ),
+        
+        // 2. Ambient Glows
+        Positioned(
+          top: -100,
+          right: -100,
+          child: _buildGlowOrb(glowColor1, isDarkMode),
+        ),
+        Positioned(
+          bottom: -100,
+          left: -100,
+          child: _buildGlowOrb(glowColor2, isDarkMode),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildGlowOrb(Color color, bool isDark) {
+    final double opacity = isDark ? 0.15 : 0.08;
+    final double blur = isDark ? 100 : 150;
+    
+    return Container(
+      width: 300,
+      height: 300,
+      decoration: BoxDecoration(
+        shape: BoxShape.circle,
+        color: color.withOpacity(opacity),
+        boxShadow: [
+          BoxShadow(
+            color: color.withOpacity(opacity),
+            blurRadius: blur,
+            spreadRadius: 50,
+          ),
+        ],
+      ),
+    );
+  }
+}
 
 class ChatScreen extends StatefulWidget {
   const ChatScreen({super.key});
@@ -43,10 +110,170 @@ class _ChatScreenState extends State<ChatScreen> with SingleTickerProviderStateM
     ));
 
     // Start fade in after the Hero transition (approx 1000ms)
-    Future.delayed(const Duration(milliseconds: 1000), () {
+    Future.delayed(const Duration(milliseconds: 1000), () async {
       _fadeController.forward();
-      _fetchWelcomeMessage();
+      
+      // Check if launched from notification
+      bool launchedFromNotif = await _checkLaunchPayload();
+      
+      // Only fetch welcome if NOT launched from notification
+      // (If launched from notification, the dialog/interaction takes precedence)
+      if (!launchedFromNotif) {
+        _fetchWelcomeMessage();
+      }
+      
+      _scheduleNotifications();
     });
+
+    // Listen for notification taps while app is running
+    NotificationService().selectNotificationStream.stream.listen((String? payload) {
+      if (payload != null) {
+        _handleNotificationTap(payload);
+      }
+    });
+  }
+
+  Future<bool> _checkLaunchPayload() async {
+    final response = await NotificationService().getLaunchNotification();
+    if (response != null && response.payload != null) {
+      // Check if we already handled this specific notification ID
+      final prefs = await SharedPreferences.getInstance();
+      final lastHandledId = prefs.getInt('last_handled_notification_id');
+      
+      // If the ID is different (or null), handle it and save the new ID
+      if (lastHandledId != response.id) {
+        if (response.id != null) {
+           await prefs.setInt('last_handled_notification_id', response.id!);
+        }
+        _handleNotificationTap(response.payload!);
+        return true;
+      }
+    }
+    return false;
+  }
+
+  void _handleNotificationTap(String payload) {
+    // Show a dialog with the payload
+    showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text("Reminder"),
+        content: Text(payload),
+        actions: [
+          TextButton(
+            onPressed: () {
+              Navigator.pop(context);
+              // Trigger Contextual AI Response
+              _triggerContextualAI(payload);
+            },
+            child: const Text("OK"),
+          ),
+        ],
+      ),
+    );
+  }
+
+  void _triggerContextualAI(String payload) async {
+    if (_isLoading || _isStreaming) return;
+
+    setState(() {
+      _isLoading = true;
+      _isStreaming = false;
+    });
+
+    // We send a "System Prompt" disguised as a user message, 
+    // but we don't add it to the UI _messages list.
+    // This makes it look like the AI initiated the conversation.
+    final prompt = "[SYSTEM_EVENT: The user just opened a notification for this reminder: \"$payload\". As S.AI, their supportive companion, acknowledge this warmly. Offer encouragement or ask if they need any support, but keep it natural and brief. Do not be pushy.]";
+
+    try {
+      String fullText = "";
+      bool isFirstChunk = true;
+      
+      await for (final chunk in _chatService.sendMessageStream(prompt)) {
+        fullText += chunk;
+        
+        if (isFirstChunk) {
+          setState(() {
+            _isLoading = false;
+            _isStreaming = true;
+            _messages.add(ChatMessage(
+              text: fullText,
+              isUser: false,
+              timestamp: DateTime.now(),
+            ));
+          });
+          isFirstChunk = false;
+        } else {
+          setState(() {
+            _messages.last = ChatMessage(
+              text: fullText,
+              isUser: false,
+              timestamp: _messages.last.timestamp,
+            );
+          });
+        }
+        _scrollToBottom();
+      }
+    } catch (e) {
+      debugPrint("Contextual AI failed: $e");
+      // Fallback if network fails
+      if (mounted) {
+        setState(() {
+          _messages.add(ChatMessage(
+            text: "I see you have a reminder: \"$payload\". Let me know if you need help!",
+            isUser: false,
+            timestamp: DateTime.now(),
+          ));
+        });
+      }
+    } finally {
+      if (mounted) {
+        setState(() {
+          _isLoading = false;
+          _isStreaming = false;
+        });
+      }
+    }
+  }
+
+  Future<void> _scheduleNotifications() async {
+    try {
+      // Fetch all memories to find upcoming events
+      final memories = await _chatService.fetchMemories();
+      final now = DateTime.now();
+
+      // NOTE: Do NOT cancelAll() here.
+      // In production, users may create reminders immediately after opening the app.
+      // cancelAll() can race and wipe newly scheduled reminders before they fire.
+
+      for (var memory in memories) {
+        if (memory.targetTime != null && memory.targetTime!.isAfter(now)) {
+          // Schedule for the exact time
+          // Or maybe 15 mins before? Let's do exact time for now as per user request "meeting in 30 min"
+          
+          String title = memory.type == 'plan' ? "Time for your plan!" : "Reminder";
+          String body = memory.content;
+          
+          // Simple heuristic for "Warm Wish" vs "Reminder"
+          if (body.toLowerCase().contains('meeting') || body.toLowerCase().contains('interview')) {
+             title = "Good luck! 🌟";
+             body = "You've got this: ${memory.content}";
+          } else if (body.toLowerCase().contains('study') || body.toLowerCase().contains('focus')) {
+             title = "Time to focus 🧠";
+          }
+
+          await NotificationService().scheduleNotification(
+            id: memory.id,
+            title: title,
+            body: body,
+            scheduledTime: memory.targetTime!,
+          );
+        }
+      }
+    } catch (e) {
+      debugPrint("Failed to schedule notifications: $e");
+    }
   }
 
   @override
@@ -169,12 +396,22 @@ class _ChatScreenState extends State<ChatScreen> with SingleTickerProviderStateM
       await for (final chunk in _chatService.sendMessageStream(userText)) {
         fullText += chunk;
         
+        String displayText = fullText;
+        if (fullText.contains("__JSON_START__")) {
+            if (kDebugMode) {
+                // In debug mode, show the raw JSON so we know it arrived
+                displayText = fullText;
+            } else {
+                displayText = fullText.split("__JSON_START__")[0];
+            }
+        }
+        
         if (isFirstChunk) {
           setState(() {
             _isLoading = false;
             _isStreaming = true;
             _messages.add(ChatMessage(
-              text: fullText,
+              text: displayText,
               isUser: false,
               timestamp: DateTime.now(),
             ));
@@ -183,13 +420,36 @@ class _ChatScreenState extends State<ChatScreen> with SingleTickerProviderStateM
         } else {
           setState(() {
             _messages.last = ChatMessage(
-              text: fullText,
+              text: displayText,
               isUser: false,
               timestamp: _messages.last.timestamp,
             );
           });
         }
         _scrollToBottom();
+      }
+
+      // Handle Side Effects (Production Ready: Immediate Scheduling)
+      if (fullText.contains("__JSON_START__")) {
+          final parts = fullText.split("__JSON_START__");
+          if (parts.length > 1) {
+              final jsonStr = parts[1].trim();
+              try {
+                  final List<dynamic> insights = jsonDecode(jsonStr);
+                  await NotificationService.scheduleFromInsights(insights);
+                  
+                  if (mounted && insights.isNotEmpty) {
+                      bool hasTime = insights.any((i) => i['target_time'] != null);
+                      if (hasTime) {
+                        ScaffoldMessenger.of(context).showSnackBar(
+                            const SnackBar(content: Text("Reminder scheduled! ⏰")),
+                        );
+                      }
+                  }
+              } catch (e) {
+                  debugPrint("Error parsing insights: $e");
+              }
+          }
       }
     } catch (e) {
       setState(() {
@@ -230,34 +490,18 @@ class _ChatScreenState extends State<ChatScreen> with SingleTickerProviderStateM
 
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
-      body: Stack(
-        children: [
-          // 1. Background
-          Container(
-            decoration: BoxDecoration(
-              gradient: LinearGradient(
-                begin: Alignment.topLeft,
-                end: Alignment.bottomRight,
-                colors: [_bgStart, _bgEnd],
-              ),
-            ),
-          ),
-          
-          // 2. Ambient Glows
-          Positioned(
-            top: -100,
-            right: -100,
-            child: _buildGlowOrb(_glowColor1),
-          ),
-          Positioned(
-            bottom: -100,
-            left: -100,
-            child: _buildGlowOrb(_glowColor2),
-          ),
+    return Stack(
+      children: [
+        // 1. Background (Static, ignores keyboard)
+        Positioned.fill(
+          child: ChatBackground(isDarkMode: _isDarkMode),
+        ),
 
-          // 3. Content
-          FadeTransition(
+        // 2. Scaffold (Handles resizing for input)
+        Scaffold(
+          backgroundColor: Colors.transparent,
+          resizeToAvoidBottomInset: true, // Native smooth animation
+          body: FadeTransition(
             opacity: _contentFadeAnimation,
             child: Stack(
               children: [
@@ -288,31 +532,16 @@ class _ChatScreenState extends State<ChatScreen> with SingleTickerProviderStateM
               ],
             ),
           ),
-        ],
-      ),
+        ),
+      ],
     );
   }
 
   Widget _buildGlowOrb(Color color) {
-    // In light mode, we want a subtle wash, not a "lamp".
-    final double opacity = _isDarkMode ? 0.15 : 0.08;
-    final double blur = _isDarkMode ? 100 : 150;
-    
-    return Container(
-      width: 300,
-      height: 300,
-      decoration: BoxDecoration(
-        shape: BoxShape.circle,
-        color: color.withOpacity(opacity),
-        boxShadow: [
-          BoxShadow(
-            color: color.withOpacity(opacity),
-            blurRadius: blur,
-            spreadRadius: 50,
-          ),
-        ],
-      ),
-    );
+    // This method is now unused in ChatScreenState as it moved to ChatBackground
+    // But we keep it if needed for other parts, or remove it.
+    // For now, I will remove it to avoid confusion since it's in ChatBackground.
+    return const SizedBox.shrink();
   }
 
   Widget _buildHeader() {
@@ -359,18 +588,42 @@ class _ChatScreenState extends State<ChatScreen> with SingleTickerProviderStateM
           const Spacer(),
           FadeTransition(
             opacity: _contentFadeAnimation,
-            child: IconButton(
-              icon: Icon(
-                _isDarkMode ? Icons.light_mode : Icons.dark_mode,
-                color: _textColor,
-              ),
-              onPressed: () async {
-                final prefs = await SharedPreferences.getInstance();
-                setState(() {
+            child: Row(
+              children: [
+                IconButton(
+                  icon: Icon(Icons.person_outline, color: _textColor),
+                  tooltip: 'Profile',
+                  onPressed: () {
+                    Navigator.push(
+                      context,
+                      MaterialPageRoute(builder: (context) => const ProfileScreen()),
+                    );
+                  },
+                ),
+                IconButton(
+                  icon: Icon(Icons.memory, color: _iconColor),
+                  tooltip: 'Memories',
+                  onPressed: () {
+                    Navigator.push(
+                      context,
+                      MaterialPageRoute(builder: (context) => const MemoryScreen()),
+                    );
+                  },
+                ),
+                IconButton(
+                  icon: Icon(
+                    _isDarkMode ? Icons.light_mode : Icons.dark_mode,
+                    color: _textColor,
+                  ),
+                  onPressed: () async {
+                    final prefs = await SharedPreferences.getInstance();
+                    setState(() {
                   _isDarkMode = !_isDarkMode;
                 });
                 prefs.setBool('isDarkMode', _isDarkMode);
               },
+            ),
+              ],
             ),
           ),
         ],
@@ -379,19 +632,21 @@ class _ChatScreenState extends State<ChatScreen> with SingleTickerProviderStateM
   }
 
   Widget _buildMessageList() {
-    return ListView.builder(
-      controller: _scrollController,
-      padding: EdgeInsets.only(
-        top: MediaQuery.of(context).padding.top + 90, // Offset for floating header
-        bottom: 20,
-        left: 16,
-        right: 16,
+    return RepaintBoundary(
+      child: ListView.builder(
+        controller: _scrollController,
+        padding: EdgeInsets.only(
+          top: MediaQuery.of(context).padding.top + 90, // Offset for floating header
+          bottom: 20,
+          left: 16,
+          right: 16,
+        ),
+        itemCount: _messages.length,
+        itemBuilder: (context, index) {
+          final msg = _messages[index];
+          return _buildMessageBubble(msg);
+        },
       ),
-      itemCount: _messages.length,
-      itemBuilder: (context, index) {
-        final msg = _messages[index];
-        return _buildMessageBubble(msg);
-      },
     );
   }
 
@@ -418,13 +673,7 @@ class _ChatScreenState extends State<ChatScreen> with SingleTickerProviderStateM
                 : _borderColor,
             width: 1,
           ),
-          boxShadow: [
-            BoxShadow(
-              color: Colors.black.withOpacity(0.1),
-              blurRadius: 6,
-              offset: const Offset(0, 3),
-            ),
-          ],
+          // Removed BoxShadow for performance during keyboard animation
         ),
         padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
         child: Column(
@@ -481,13 +730,7 @@ class _ChatScreenState extends State<ChatScreen> with SingleTickerProviderStateM
               bottomRight: Radius.circular(20),
             ),
             border: Border.all(color: _borderColor, width: 1),
-            boxShadow: [
-              BoxShadow(
-                color: Colors.black.withOpacity(0.05),
-                blurRadius: 4,
-                offset: const Offset(0, 2),
-              ),
-            ],
+            // Removed BoxShadow for performance
           ),
           child: _TypingDots(color: _iconColor),
         ),
