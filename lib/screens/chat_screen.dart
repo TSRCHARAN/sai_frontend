@@ -5,6 +5,9 @@ import 'package:flutter/material.dart';
 import 'package:flutter_markdown/flutter_markdown.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:speech_to_text/speech_to_text.dart' as stt;
+import 'package:flutter_tts/flutter_tts.dart';
+import 'package:permission_handler/permission_handler.dart';
 import '../models/chat_message.dart';
 import '../services/chat_service.dart';
 import '../services/notification_service.dart';
@@ -85,6 +88,13 @@ class _ChatScreenState extends State<ChatScreen> with SingleTickerProviderStateM
   final ScrollController _scrollController = ScrollController();
   final ChatService _chatService = ChatService();
   final List<ChatMessage> _messages = [];
+  
+  // Voice
+  final stt.SpeechToText _speech = stt.SpeechToText();
+  final FlutterTts _flutterTts = FlutterTts();
+  bool _isListening = false;
+  bool _speechEnabled = false;
+
   bool _isLoading = false;
   bool _isStreaming = false;
   bool _isDarkMode = true;
@@ -96,6 +106,7 @@ class _ChatScreenState extends State<ChatScreen> with SingleTickerProviderStateM
   void initState() {
     super.initState();
     _loadTheme();
+    _initVoice();
     _fadeController = AnimationController(
       vsync: this,
       duration: const Duration(milliseconds: 800),
@@ -131,6 +142,192 @@ class _ChatScreenState extends State<ChatScreen> with SingleTickerProviderStateM
         _handleNotificationTap(payload);
       }
     });
+  }
+
+  void _initVoice() async {
+    try {
+      // 1. Request Microphone Permission
+      var status = await Permission.microphone.request();
+      
+      if (status.isPermanentlyDenied) {
+        debugPrint("Microphone permission permanently denied");
+        return;
+      }
+
+      if (!status.isGranted) {
+        debugPrint("Microphone permission denied");
+        return;
+      }
+
+      // 2. Initialize Speech Service
+      _speechEnabled = await _speech.initialize(
+        onStatus: (status) {
+          if (status == 'notListening') {
+            setState(() => _isListening = false);
+          }
+        },
+        onError: (error) async {
+            debugPrint('Speech Error: $error');
+            setState(() => _isListening = false);
+            
+            // Handle "error_permission" specifically
+            if (error.errorMsg.contains('error_permission')) {
+                // Check if it's the App's permission or the System's
+                if (await Permission.microphone.isGranted) {
+                    // App has permission, so it's the System (Google App)
+                    if (mounted) {
+                        _showGoogleAppWarning();
+                    }
+                } else {
+                    _showPermissionDialog();
+                }
+            }
+        },
+        debugLogging: true, // Enable debug logs for more info
+      );
+      
+      await _flutterTts.setLanguage("en-US");
+      await _flutterTts.setPitch(1.0);
+      await _flutterTts.setSpeechRate(0.5);
+      
+      setState(() {});
+    } catch (e) {
+      debugPrint("Voice init error: $e");
+    }
+  }
+
+  void _showGoogleAppWarning() {
+      final bool isIOS = defaultTargetPlatform == TargetPlatform.iOS;
+      final String message = isIOS
+        ? "On iPhone (iOS), voice needs TWO permissions:\n"
+          "1) Microphone\n"
+          "2) Speech Recognition\n\n"
+          "If you tapped ‘Don’t Allow’ earlier:\n"
+          "Settings → Privacy & Security → Microphone → enable S.AI\n"
+          "Settings → Privacy & Security → Speech Recognition → enable S.AI\n\n"
+          "Then return to the app and try the mic again."
+        : "Voice needs Google’s Speech + TTS services (not just this app’s permission).\n\n"
+          "Fix steps (Android):\n"
+          "1) Settings → Apps → Manage apps → Google → Permissions → Microphone → Allow\n"
+          "2) Settings → Apps → Default apps → Voice input → select ‘Speech Services by Google’\n"
+          "3) Settings → Accessibility (or System) → Text-to-speech output → select ‘Google Text-to-speech engine’\n\n"
+          "MIUI/Xiaomi tip: also check Google app Battery saver/Background restrictions and set to ‘No restrictions’.\n\n"
+          "If ‘Speech Services by Google’ / ‘Google Text-to-speech’ is missing, install/enable it from Play Store.";
+
+      showDialog(
+        context: context,
+        builder: (ctx) => AlertDialog(
+        title: Text(isIOS ? "Voice Permissions" : "Speech Service Error"),
+        content: Text(message),
+            actions: [
+                TextButton(
+                    onPressed: () => Navigator.pop(ctx),
+                    child: const Text("OK"),
+                ),
+            ],
+        ),
+    );
+  }
+
+  void _showPermissionDialog() {
+      showDialog(
+        context: context,
+        builder: (ctx) => AlertDialog(
+            title: const Text("Microphone Permission"),
+            content: const Text("S.AI needs microphone access to hear you. Please enable it in settings."),
+            actions: [
+                TextButton(
+                    onPressed: () => Navigator.pop(ctx),
+                    child: const Text("Cancel"),
+                ),
+                TextButton(
+                    onPressed: () {
+                        Navigator.pop(ctx);
+                        openAppSettings();
+                    },
+                    child: const Text("Open Settings"),
+                ),
+            ],
+        ),
+    );
+  }
+
+  void _startListening() async {
+    // Check permission again before starting
+    var status = await Permission.microphone.status;
+    if (status.isPermanentlyDenied || status.isDenied) {
+        // Try to request one last time or show settings
+        status = await Permission.microphone.request();
+        if (status.isPermanentlyDenied) {
+            _showPermissionDialog();
+            return;
+        }
+    }
+
+    if (!_speechEnabled) {
+        // Try initializing again if it failed before
+        try {
+            _speechEnabled = await _speech.initialize(
+                onError: (error) async {
+                    debugPrint('Speech Error (Re-init): $error');
+                    setState(() => _isListening = false);
+                    if (error.errorMsg.contains('permission')) {
+                        var status = await Permission.microphone.status;
+                        if (!status.isGranted) {
+                            _showPermissionDialog();
+                        }
+                    }
+                }
+            );
+        } catch (e) {
+            debugPrint("Re-init failed: $e");
+        }
+    }
+    
+    if (!_speechEnabled) {
+        ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text("Could not initialize speech recognition. Check permissions.")),
+        );
+        return;
+    }
+    
+    // Stop TTS if speaking
+    await _flutterTts.stop();
+
+    try {
+        await _speech.listen(
+        onResult: (result) {
+            setState(() {
+            _controller.text = result.recognizedWords;
+            if (result.finalResult) {
+                _isListening = false;
+                _sendMessage(); // Auto-send on final result
+            }
+            });
+        },
+        );
+        setState(() => _isListening = true);
+    } catch (e) {
+        debugPrint("Listen error: $e");
+        setState(() => _isListening = false);
+    }
+  }
+
+  void _stopListening() async {
+    await _speech.stop();
+    setState(() => _isListening = false);
+  }
+
+  Future<void> _speak(String text) async {
+    // Strip markdown for speech
+    final cleanText = text
+        .replaceAll(RegExp(r'\*'), '') // Remove bold/italic markers
+        .replaceAll(RegExp(r'\[.*?\]'), '') // Remove system tags
+        .replaceAll(RegExp(r'http\S+'), 'link'); // Replace URLs
+        
+    if (cleanText.isNotEmpty) {
+      await _flutterTts.speak(cleanText);
+    }
   }
 
   Future<bool> _checkLaunchPayload() async {
@@ -215,6 +412,10 @@ class _ChatScreenState extends State<ChatScreen> with SingleTickerProviderStateM
         }
         _scrollToBottom();
       }
+      
+      // Speak contextual response
+      _speak(fullText);
+
     } catch (e) {
       debugPrint("Contextual AI failed: $e");
       // Fallback if network fails
@@ -351,6 +552,10 @@ class _ChatScreenState extends State<ChatScreen> with SingleTickerProviderStateM
         }
         _scrollToBottom();
       }
+      
+      // Speak welcome
+      _speak(fullText);
+
     } catch (e) {
       // If welcome fails, just show a generic greeting locally or do nothing
       if (_messages.isEmpty) {
@@ -428,6 +633,13 @@ class _ChatScreenState extends State<ChatScreen> with SingleTickerProviderStateM
         }
         _scrollToBottom();
       }
+
+      // Speak the response
+      String finalSpeechText = fullText;
+      if (fullText.contains("__JSON_START__")) {
+          finalSpeechText = fullText.split("__JSON_START__")[0];
+      }
+      _speak(finalSpeechText);
 
       // Handle Side Effects (Production Ready: Immediate Scheduling)
       if (fullText.contains("__JSON_START__")) {
@@ -770,6 +982,33 @@ class _ChatScreenState extends State<ChatScreen> with SingleTickerProviderStateM
             ),
           ),
           const SizedBox(width: 12),
+          
+          // Mic Button
+          GestureDetector(
+            onLongPress: _speechEnabled ? _startListening : null,
+            onLongPressUp: _speechEnabled ? _stopListening : null,
+            onTap: () {
+                if (!_speechEnabled) {
+                    _showGoogleAppWarning();
+                } else {
+                    _isListening ? _stopListening() : _startListening();
+                }
+            },
+            child: Container(
+               padding: const EdgeInsets.all(12),
+               decoration: BoxDecoration(
+                 shape: BoxShape.circle,
+                 color: _isListening ? Colors.redAccent : _surfaceColor,
+                 border: Border.all(color: _speechEnabled ? _borderColor : Colors.orange.withOpacity(0.5)),
+               ),
+               child: Icon(
+                 !_speechEnabled ? Icons.mic_off : (_isListening ? Icons.mic : Icons.mic_none),
+                 color: !_speechEnabled ? Colors.orange : (_isListening ? Colors.white : _iconColor),
+               ),
+            ),
+          ),
+          const SizedBox(width: 8),
+
           Opacity(
             opacity: (_isLoading || _isStreaming) ? 0.5 : 1.0,
             child: Container(
