@@ -49,6 +49,18 @@ app.*.map.json
 .env
 .env.*
 
+# Secrets
+*.pem
+*.key
+*.keystore
+*.jks
+*.pfx
+key.properties
+local.properties
+secrets.json
+google-services.json
+GoogleService-Info.plist
+
 # IDE
 .vscode/
 .idea/
