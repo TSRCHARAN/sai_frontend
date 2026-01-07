@@ -1,16 +1,21 @@
-import 'dart:ui';
+import 'dart:async';
 import 'dart:convert';
+import 'dart:ui';
+import 'package:firebase_messaging/firebase_messaging.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
-import 'package:flutter_markdown/flutter_markdown.dart';
+import 'package:flutter/services.dart';
+import 'package:url_launcher/url_launcher.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:shared_preferences/shared_preferences.dart';
-import 'package:speech_to_text/speech_to_text.dart' as stt;
-import 'package:flutter_tts/flutter_tts.dart';
 import 'package:permission_handler/permission_handler.dart';
 import '../models/chat_message.dart';
 import '../services/chat_service.dart';
 import '../services/notification_service.dart';
+import '../services/voice_service.dart';
+import '../widgets/chat/chat_header.dart';
+import '../widgets/chat/chat_input_area.dart';
+import '../widgets/chat/chat_message_bubble.dart';
 import 'memory_screen.dart';
 import 'profile_screen.dart';
 
@@ -77,27 +82,37 @@ class ChatBackground extends StatelessWidget {
 }
 
 class ChatScreen extends StatefulWidget {
-  const ChatScreen({super.key});
+  final String? sessionId;
+  final String? initialSystemPrompt;
+
+  const ChatScreen({super.key, this.sessionId, this.initialSystemPrompt});
 
   @override
   State<ChatScreen> createState() => _ChatScreenState();
 }
 
-class _ChatScreenState extends State<ChatScreen> with SingleTickerProviderStateMixin {
+class _ChatScreenState extends State<ChatScreen> with SingleTickerProviderStateMixin, WidgetsBindingObserver {
   final TextEditingController _controller = TextEditingController();
   final ScrollController _scrollController = ScrollController();
   final ChatService _chatService = ChatService();
   final List<ChatMessage> _messages = [];
   
   // Voice
-  final stt.SpeechToText _speech = stt.SpeechToText();
-  final FlutterTts _flutterTts = FlutterTts();
+  final VoiceService _voiceService = VoiceService();
+  StreamSubscription<bool>? _listeningSubscription;
+  StreamSubscription<bool>? _speakingSubscription;
+  
   bool _isListening = false;
   bool _speechEnabled = false;
 
   bool _isLoading = false;
   bool _isStreaming = false;
+  bool _isSpeaking = false;
+  DateTime? _currentlyPlayingMessageTimestamp;
   bool _isDarkMode = true;
+
+  // Debounce for task toggles
+  final Map<String, Timer> _taskDebouncers = {};
 
   late AnimationController _fadeController;
   late Animation<double> _contentFadeAnimation;
@@ -105,7 +120,22 @@ class _ChatScreenState extends State<ChatScreen> with SingleTickerProviderStateM
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this); // Listen for app resume
     _loadTheme();
+    
+    // Voice Service Subscriptions
+    _listeningSubscription = _voiceService.isListeningStream.listen((isListening) {
+      if (mounted) setState(() => _isListening = isListening);
+    });
+    _speakingSubscription = _voiceService.isSpeakingStream.listen((isSpeaking) {
+      if (mounted) {
+        setState(() {
+          _isSpeaking = isSpeaking;
+          if (!isSpeaking) _currentlyPlayingMessageTimestamp = null;
+        });
+      }
+    });
+    
     _initVoice();
     _fadeController = AnimationController(
       vsync: this,
@@ -120,15 +150,24 @@ class _ChatScreenState extends State<ChatScreen> with SingleTickerProviderStateM
       curve: Curves.easeIn,
     ));
 
-    // Start fade in after the Hero transition (approx 1000ms)
-    Future.delayed(const Duration(milliseconds: 1000), () async {
+    // Start fade in shortly after build
+    Future.delayed(const Duration(milliseconds: 300), () {
       _fadeController.forward();
-      
+    });
+
+    // Start logic immediately
+    Future.delayed(Duration.zero, () async {
+      // If we have an initial system prompt (e.g. Discovery Mode), trigger it immediately
+      // and SKIP the welcome message.
+      if (widget.initialSystemPrompt != null) {
+          _sendHiddenSystemMessage(widget.initialSystemPrompt!);
+          return;
+      }
+
       // Check if launched from notification
       bool launchedFromNotif = await _checkLaunchPayload();
       
       // Only fetch welcome if NOT launched from notification
-      // (If launched from notification, the dialog/interaction takes precedence)
       if (!launchedFromNotif) {
         _fetchWelcomeMessage();
       }
@@ -136,12 +175,41 @@ class _ChatScreenState extends State<ChatScreen> with SingleTickerProviderStateM
       _scheduleNotifications();
     });
 
-    // Listen for notification taps while app is running
+    // Listen for notification taps while app is running (Local)
     NotificationService().selectNotificationStream.stream.listen((String? payload) {
       if (payload != null) {
         _handleNotificationTap(payload);
       }
     });
+
+    // Listen for notification taps while app is in background (FCM)
+    FirebaseMessaging.onMessageOpenedApp.listen((RemoteMessage message) {
+      if (message.notification != null) {
+        // Use body as payload, or data if you prefer
+        final payload = message.notification?.body ?? "Reminder";
+        _handleNotificationTap(payload);
+      }
+    });
+  }
+
+  @override
+  void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    _voiceService.stop(); // Stop speaking when screen is disposed
+    _listeningSubscription?.cancel();
+    _speakingSubscription?.cancel();
+    _controller.dispose();
+    _scrollController.dispose();
+    _fadeController.dispose();
+    super.dispose();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed) {
+      // App came to foreground. Sync timezone in case user traveled.
+      NotificationService().syncTimezone();
+    }
   }
 
   void _initVoice() async {
@@ -159,16 +227,16 @@ class _ChatScreenState extends State<ChatScreen> with SingleTickerProviderStateM
         return;
       }
 
-      // 2. Initialize Speech Service
-      _speechEnabled = await _speech.initialize(
+      // 2. Initialize Voice Service
+      await _voiceService.init();
+      
+      // 3. Initialize STT
+      _speechEnabled = await _voiceService.initializeSTT(
         onStatus: (status) {
-          if (status == 'notListening') {
-            setState(() => _isListening = false);
-          }
+          // Handled by stream
         },
         onError: (error) async {
             debugPrint('Speech Error: $error');
-            setState(() => _isListening = false);
             
             // Handle "error_permission" specifically
             if (error.errorMsg.contains('error_permission')) {
@@ -183,13 +251,8 @@ class _ChatScreenState extends State<ChatScreen> with SingleTickerProviderStateM
                 }
             }
         },
-        debugLogging: true, // Enable debug logs for more info
       );
-      
-      await _flutterTts.setLanguage("en-US");
-      await _flutterTts.setPitch(1.0);
-      await _flutterTts.setSpeechRate(0.5);
-      
+
       setState(() {});
     } catch (e) {
       debugPrint("Voice init error: $e");
@@ -267,10 +330,10 @@ class _ChatScreenState extends State<ChatScreen> with SingleTickerProviderStateM
     if (!_speechEnabled) {
         // Try initializing again if it failed before
         try {
-            _speechEnabled = await _speech.initialize(
+            _speechEnabled = await _voiceService.initializeSTT(
+                onStatus: (_) {},
                 onError: (error) async {
                     debugPrint('Speech Error (Re-init): $error');
-                    setState(() => _isListening = false);
                     if (error.errorMsg.contains('permission')) {
                         var status = await Permission.microphone.status;
                         if (!status.isGranted) {
@@ -291,42 +354,36 @@ class _ChatScreenState extends State<ChatScreen> with SingleTickerProviderStateM
         return;
     }
     
-    // Stop TTS if speaking
-    await _flutterTts.stop();
-
-    try {
-        await _speech.listen(
-        onResult: (result) {
+    await _voiceService.startListening(
+        onResult: (text, isFinal) {
             setState(() {
-            _controller.text = result.recognizedWords;
-            if (result.finalResult) {
-                _isListening = false;
-                _sendMessage(); // Auto-send on final result
-            }
+                _controller.text = text;
+                if (isFinal) {
+                    _sendMessage(); // Auto-send on final result
+                }
             });
-        },
-        );
-        setState(() => _isListening = true);
-    } catch (e) {
-        debugPrint("Listen error: $e");
-        setState(() => _isListening = false);
-    }
+        }
+    );
   }
 
   void _stopListening() async {
-    await _speech.stop();
-    setState(() => _isListening = false);
+    await _voiceService.stopListening();
   }
 
-  Future<void> _speak(String text) async {
-    // Strip markdown for speech
-    final cleanText = text
-        .replaceAll(RegExp(r'\*'), '') // Remove bold/italic markers
-        .replaceAll(RegExp(r'\[.*?\]'), '') // Remove system tags
-        .replaceAll(RegExp(r'http\S+'), 'link'); // Replace URLs
-        
-    if (cleanText.isNotEmpty) {
-      await _flutterTts.speak(cleanText);
+  Future<void> _stopSpeaking() async {
+    await _voiceService.stop();
+    setState(() {
+      _isSpeaking = false;
+      _currentlyPlayingMessageTimestamp = null;
+    });
+  }
+
+  Future<void> _speak(String text, {DateTime? messageTimestamp}) async {
+    if (text.isNotEmpty) {
+      setState(() {
+        _currentlyPlayingMessageTimestamp = messageTimestamp;
+      });
+      await _voiceService.speak(text);
     }
   }
 
@@ -350,24 +407,9 @@ class _ChatScreenState extends State<ChatScreen> with SingleTickerProviderStateM
   }
 
   void _handleNotificationTap(String payload) {
-    // Show a dialog with the payload
-    showDialog(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: const Text("Reminder"),
-        content: Text(payload),
-        actions: [
-          TextButton(
-            onPressed: () {
-              Navigator.pop(context);
-              // Trigger Contextual AI Response
-              _triggerContextualAI(payload);
-            },
-            child: const Text("OK"),
-          ),
-        ],
-      ),
-    );
+    // Instead of a dialog, we directly trigger the AI conversation.
+    // This feels more seamless: You tap the notification, app opens, AI talks.
+    _triggerContextualAI(payload);
   }
 
   void _triggerContextualAI(String payload) async {
@@ -387,24 +429,30 @@ class _ChatScreenState extends State<ChatScreen> with SingleTickerProviderStateM
       String fullText = "";
       bool isFirstChunk = true;
       
-      await for (final chunk in _chatService.sendMessageStream(prompt)) {
+      await for (final chunk in _chatService.sendMessageStream(prompt, sessionId: widget.sessionId)) {
         fullText += chunk;
+        
+        String displayText = fullText;
+        if (fullText.contains("__JSON_START__")) {
+            displayText = fullText.split("__JSON_START__")[0];
+        }
         
         if (isFirstChunk) {
           setState(() {
             _isLoading = false;
             _isStreaming = true;
             _messages.add(ChatMessage(
-              text: fullText,
+              text: displayText,
               isUser: false,
               timestamp: DateTime.now(),
             ));
           });
           isFirstChunk = false;
+          _scrollToBottom(force: true);
         } else {
           setState(() {
             _messages.last = ChatMessage(
-              text: fullText,
+              text: displayText,
               isUser: false,
               timestamp: _messages.last.timestamp,
             );
@@ -414,7 +462,13 @@ class _ChatScreenState extends State<ChatScreen> with SingleTickerProviderStateM
       }
       
       // Speak contextual response
-      _speak(fullText);
+      String finalSpeechText = fullText;
+      if (fullText.contains("__JSON_START__")) {
+          finalSpeechText = fullText.split("__JSON_START__")[0];
+      }
+      if (_messages.isNotEmpty) {
+        _speak(finalSpeechText, messageTimestamp: _messages.last.timestamp);
+      }
 
     } catch (e) {
       debugPrint("Contextual AI failed: $e");
@@ -477,13 +531,7 @@ class _ChatScreenState extends State<ChatScreen> with SingleTickerProviderStateM
     }
   }
 
-  @override
-  void dispose() {
-    _fadeController.dispose();
-    _controller.dispose();
-    _scrollController.dispose();
-    super.dispose();
-  }
+
 
   Future<void> _loadTheme() async {
     final prefs = await SharedPreferences.getInstance();
@@ -527,7 +575,7 @@ class _ChatScreenState extends State<ChatScreen> with SingleTickerProviderStateM
       String fullText = "";
       bool isFirstChunk = true;
       
-      await for (final chunk in _chatService.getWelcomeStream()) {
+      await for (final chunk in _chatService.getWelcomeStream(sessionId: widget.sessionId)) {
         fullText += chunk;
         
         if (isFirstChunk) {
@@ -541,6 +589,7 @@ class _ChatScreenState extends State<ChatScreen> with SingleTickerProviderStateM
             ));
           });
           isFirstChunk = false;
+          _scrollToBottom(force: true);
         } else {
           setState(() {
             _messages.last = ChatMessage(
@@ -554,7 +603,9 @@ class _ChatScreenState extends State<ChatScreen> with SingleTickerProviderStateM
       }
       
       // Speak welcome
-      _speak(fullText);
+      if (_messages.isNotEmpty) {
+        _speak(fullText, messageTimestamp: _messages.last.timestamp);
+      }
 
     } catch (e) {
       // If welcome fails, just show a generic greeting locally or do nothing
@@ -592,13 +643,13 @@ class _ChatScreenState extends State<ChatScreen> with SingleTickerProviderStateM
       _isLoading = true;
       _isStreaming = false;
     });
-    _scrollToBottom();
+    _scrollToBottom(force: true);
 
     try {
       String fullText = "";
       bool isFirstChunk = true;
       
-      await for (final chunk in _chatService.sendMessageStream(userText)) {
+      await for (final chunk in _chatService.sendMessageStream(userText, sessionId: widget.sessionId)) {
         fullText += chunk;
         
         String displayText = fullText;
@@ -639,7 +690,9 @@ class _ChatScreenState extends State<ChatScreen> with SingleTickerProviderStateM
       if (fullText.contains("__JSON_START__")) {
           finalSpeechText = fullText.split("__JSON_START__")[0];
       }
-      _speak(finalSpeechText);
+      if (_messages.isNotEmpty) {
+        _speak(finalSpeechText, messageTimestamp: _messages.last.timestamp);
+      }
 
       // Handle Side Effects (Production Ready: Immediate Scheduling)
       if (fullText.contains("__JSON_START__")) {
@@ -648,7 +701,16 @@ class _ChatScreenState extends State<ChatScreen> with SingleTickerProviderStateM
               final jsonStr = parts[1].trim();
               try {
                   final List<dynamic> insights = jsonDecode(jsonStr);
-                  await NotificationService.scheduleFromInsights(insights);
+                  
+                  // Check for 'schedule_local' flag
+                  for (var item in insights) {
+                      if (item['schedule_local'] == true && item['target_time'] != null) {
+                          await NotificationService().scheduleFromBackend(
+                              item['content'], 
+                              item['target_time']
+                          );
+                      }
+                  }
                   
                   if (mounted && insights.isNotEmpty) {
                       bool hasTime = insights.any((i) => i['target_time'] != null);
@@ -688,14 +750,19 @@ class _ChatScreenState extends State<ChatScreen> with SingleTickerProviderStateM
     }
   }
 
-  void _scrollToBottom() {
+  void _scrollToBottom({bool force = false}) {
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (_scrollController.hasClients) {
-        _scrollController.animateTo(
-          _scrollController.position.maxScrollExtent,
-          duration: const Duration(milliseconds: 400),
-          curve: Curves.easeOutExpo,
-        );
+        final position = _scrollController.position;
+        final isNearBottom = position.pixels >= position.maxScrollExtent - 200;
+        
+        if (force || isNearBottom) {
+          _scrollController.animateTo(
+            _scrollController.position.maxScrollExtent,
+            duration: const Duration(milliseconds: 400),
+            curve: Curves.easeOutExpo,
+          );
+        }
       }
     });
   }
@@ -727,7 +794,25 @@ class _ChatScreenState extends State<ChatScreen> with SingleTickerProviderStateM
                         children: [
                           Expanded(child: _buildMessageList()),
                           if (_isLoading) _buildTypingIndicator(),
-                          _buildInputArea(),
+                          ChatInputArea(
+                            controller: _controller,
+                            isLoading: _isLoading,
+                            isStreaming: _isStreaming,
+                            isListening: _isListening,
+                            isSpeechEnabled: _speechEnabled,
+                            onSendMessage: _sendMessage,
+                            onStartListening: _startListening,
+                            onStopListening: _stopListening,
+                            onShowPermissionWarning: _showGoogleAppWarning,
+                            backgroundColor: _bgStart,
+                            borderColor: _borderColor,
+                            surfaceColor: _surfaceColor,
+                            textColor: _textColor,
+                            iconColor: _iconColor,
+                            textSecondaryColor: _textSecondaryColor,
+                            glowColor: _glowColor1,
+                            isDarkMode: _isDarkMode,
+                          ),
                         ],
                       ),
                     ),
@@ -739,7 +824,24 @@ class _ChatScreenState extends State<ChatScreen> with SingleTickerProviderStateM
                   top: 0,
                   left: 0,
                   right: 0,
-                  child: _buildHeader(),
+                  child: ChatHeader(
+                    isDarkMode: _isDarkMode,
+                    isSpeaking: _isSpeaking,
+                    sessionId: widget.sessionId,
+                    animation: _contentFadeAnimation,
+                    onStopSpeaking: _stopSpeaking,
+                    onThemeToggle: () async {
+                      final prefs = await SharedPreferences.getInstance();
+                      setState(() {
+                        _isDarkMode = !_isDarkMode;
+                      });
+                      prefs.setBool('isDarkMode', _isDarkMode);
+                    },
+                    borderColor: _borderColor,
+                    backgroundColor: _bgStart,
+                    textColor: _textColor,
+                    iconColor: _iconColor,
+                  ),
                 ),
               ],
             ),
@@ -749,181 +851,149 @@ class _ChatScreenState extends State<ChatScreen> with SingleTickerProviderStateM
     );
   }
 
-  Widget _buildGlowOrb(Color color) {
-    // This method is now unused in ChatScreenState as it moved to ChatBackground
-    // But we keep it if needed for other parts, or remove it.
-    // For now, I will remove it to avoid confusion since it's in ChatBackground.
-    return const SizedBox.shrink();
-  }
 
-  Widget _buildHeader() {
-    return Container(
-      padding: EdgeInsets.only(
-        top: MediaQuery.of(context).padding.top + 16,
-        bottom: 16,
-        left: 24,
-        right: 24,
-      ),
-      decoration: BoxDecoration(
-        border: Border(bottom: BorderSide(color: _borderColor)),
-        color: _bgStart, // Solid color, no transparency
-      ),
-      child: Row(
-        children: [
-          Hero(
-            tag: 'sai_logo',
-            child: Container(
-              padding: const EdgeInsets.all(8),
-              decoration: BoxDecoration(
-                shape: BoxShape.circle,
-                border: Border.all(color: _iconColor, width: 1.5),
-              ),
-              child: Icon(Icons.auto_awesome, color: _iconColor, size: 20),
-            ),
-          ),
-          const SizedBox(width: 16),
-          Hero(
-            tag: 'sai_text',
-            child: Material(
-              color: Colors.transparent,
-              child: Text(
-                "S.AI",
-                style: GoogleFonts.orbitron(
-                  color: _textColor,
-                  fontSize: 20,
-                  fontWeight: FontWeight.bold,
-                  letterSpacing: 2,
-                ),
-              ),
-            ),
-          ),
-          const Spacer(),
-          FadeTransition(
-            opacity: _contentFadeAnimation,
-            child: Row(
-              children: [
-                IconButton(
-                  icon: Icon(Icons.person_outline, color: _textColor),
-                  tooltip: 'Profile',
-                  onPressed: () {
-                    Navigator.push(
-                      context,
-                      MaterialPageRoute(builder: (context) => const ProfileScreen()),
-                    );
-                  },
-                ),
-                IconButton(
-                  icon: Icon(Icons.memory, color: _iconColor),
-                  tooltip: 'Memories',
-                  onPressed: () {
-                    Navigator.push(
-                      context,
-                      MaterialPageRoute(builder: (context) => const MemoryScreen()),
-                    );
-                  },
-                ),
-                IconButton(
-                  icon: Icon(
-                    _isDarkMode ? Icons.light_mode : Icons.dark_mode,
-                    color: _textColor,
-                  ),
-                  onPressed: () async {
-                    final prefs = await SharedPreferences.getInstance();
-                    setState(() {
-                  _isDarkMode = !_isDarkMode;
-                });
-                prefs.setBool('isDarkMode', _isDarkMode);
-              },
-            ),
-              ],
-            ),
-          ),
-        ],
-      ),
-    );
-  }
+
+
 
   Widget _buildMessageList() {
-    return RepaintBoundary(
-      child: ListView.builder(
-        controller: _scrollController,
-        padding: EdgeInsets.only(
-          top: MediaQuery.of(context).padding.top + 90, // Offset for floating header
-          bottom: 20,
-          left: 16,
-          right: 16,
+    return GestureDetector(
+      onTap: () {
+        if (_isSpeaking) _stopSpeaking();
+        FocusScope.of(context).unfocus(); // Also dismiss keyboard
+      },
+      child: RepaintBoundary(
+        child: ListView.builder(
+          controller: _scrollController,
+          padding: EdgeInsets.only(
+            top: MediaQuery.of(context).padding.top + 90, // Offset for floating header
+            bottom: 20,
+            left: 16,
+            right: 16,
+          ),
+          itemCount: _messages.length,
+          itemBuilder: (context, index) {
+            final msg = _messages[index];
+            return ChatMessageBubble(
+              message: msg,
+              index: index,
+              isSpeaking: _isSpeaking,
+              currentlyPlayingMessageTimestamp: _currentlyPlayingMessageTimestamp,
+              onStopSpeaking: _stopSpeaking,
+              onSpeak: (text, timestamp) => _speak(text, messageTimestamp: timestamp),
+              onTaskToggle: _handleTaskToggle,
+              onTapLink: _onTapLink,
+              userBubbleColor: _userBubbleColor,
+              aiBubbleColor: _aiBubbleColor,
+              glowColor: _glowColor1,
+              borderColor: _borderColor,
+              textColor: _textColor,
+              surfaceColor: _surfaceColor,
+              backgroundColor: _bgStart,
+            );
+          },
         ),
-        itemCount: _messages.length,
-        itemBuilder: (context, index) {
-          final msg = _messages[index];
-          return _buildMessageBubble(msg);
-        },
       ),
     );
   }
 
-  Widget _buildMessageBubble(ChatMessage msg) {
-    final isUser = msg.isUser;
-    return Align(
-      alignment: isUser ? Alignment.centerRight : Alignment.centerLeft,
-      child: Container(
-        margin: const EdgeInsets.only(bottom: 10),
-        constraints: BoxConstraints(
-          maxWidth: MediaQuery.of(context).size.width * 0.85,
-        ),
-        decoration: BoxDecoration(
-          color: isUser ? _userBubbleColor : _aiBubbleColor, // Solid colors
-          borderRadius: BorderRadius.only(
-            topLeft: const Radius.circular(20),
-            topRight: const Radius.circular(20),
-            bottomLeft: Radius.circular(isUser ? 20 : 4),
-            bottomRight: Radius.circular(isUser ? 4 : 20),
-          ),
-          border: Border.all(
-            color: isUser 
-                ? _glowColor1.withOpacity(0.5) 
-                : _borderColor,
-            width: 1,
-          ),
-          // Removed BoxShadow for performance during keyboard animation
-        ),
-        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            MarkdownBody(
-              data: msg.text,
-              styleSheet: MarkdownStyleSheet(
-                p: GoogleFonts.roboto(
-                  color: isUser ? Colors.white : _textColor,
-                  fontSize: 15,
-                  height: 1.4,
-                  fontWeight: FontWeight.w400,
-                ),
-                code: GoogleFonts.robotoMono(
-                  backgroundColor: isUser ? Colors.white.withOpacity(0.1) : _surfaceColor,
-                  color: isUser ? Colors.white : _textColor,
-                  fontSize: 13,
-                ),
-                codeblockDecoration: BoxDecoration(
-                  color: isUser ? Colors.black.withOpacity(0.2) : _bgStart,
-                  borderRadius: BorderRadius.circular(8),
-                  border: Border.all(color: _borderColor),
-                ),
-              ),
-            ),
-            const SizedBox(height: 4),
-            Text(
-              "${msg.timestamp.hour}:${msg.timestamp.minute.toString().padLeft(2, '0')}",
-              style: GoogleFonts.roboto(
-                color: (isUser ? Colors.white : _textColor).withOpacity(0.5),
-                fontSize: 11,
-              ),
-            ),
-          ],
-        ),
-      ),
-    );
+
+
+  void _onTapLink(String text, String? href, String title) async {
+    if (href != null) {
+      final Uri url = Uri.parse(href);
+      if (await canLaunchUrl(url)) {
+        await launchUrl(url, mode: LaunchMode.externalApplication);
+      }
+    }
+  }
+
+
+
+  void _handleTaskToggle(int msgIndex, String fullText, int lineIndex, String taskContent, bool newIsChecked) {
+      HapticFeedback.lightImpact(); // Tactile feedback
+      
+      List<String> lines = fullText.split('\n');
+      if (lineIndex < 0 || lineIndex >= lines.length) return;
+
+      String line = lines[lineIndex];
+      
+      if (newIsChecked) {
+          if (!line.contains("✅")) {
+              lines[lineIndex] = "$line ✅";
+          }
+      } else {
+          lines[lineIndex] = line.replaceAll("✅", "").trim();
+      }
+      
+      String newText = lines.join('\n');
+      
+      setState(() {
+          _messages[msgIndex] = ChatMessage(
+              text: newText,
+              isUser: false,
+              timestamp: _messages[msgIndex].timestamp,
+          );
+      });
+
+      // 2. Debounce Network Call
+      final key = "$msgIndex-$taskContent";
+      
+      if (_taskDebouncers.containsKey(key)) {
+          _taskDebouncers[key]!.cancel();
+      }
+
+      _taskDebouncers[key] = Timer(const Duration(seconds: 2), () {
+          _taskDebouncers.remove(key);
+          
+          // Send System Event to Backend
+          if (newIsChecked) {
+             _sendHiddenSystemMessage("[SYSTEM_EVENT: User checked off task: \"$taskContent\". Congratulate them briefly and ask about the next step.]");
+          } else {
+             _sendHiddenSystemMessage("[SYSTEM_EVENT: User unchecked task: \"$taskContent\". Acknowledge this update silently or briefly.]");
+          }
+      });
+  }
+
+  void _sendHiddenSystemMessage(String systemPrompt) async {
+      try {
+          String fullResponse = "";
+          bool isFirstChunk = true;
+          
+          await for (final chunk in _chatService.sendMessageStream(systemPrompt)) {
+              fullResponse += chunk;
+              String displayText = fullResponse;
+              if (fullResponse.contains("__JSON_START__")) {
+                  displayText = fullResponse.split("__JSON_START__")[0];
+              }
+
+              if (isFirstChunk) {
+                  setState(() {
+                      _messages.add(ChatMessage(
+                          text: displayText,
+                          isUser: false,
+                          timestamp: DateTime.now(),
+                      ));
+                  });
+                  isFirstChunk = false;
+              } else {
+                  setState(() {
+                      _messages.last = ChatMessage(
+                          text: displayText,
+                          isUser: false,
+                          timestamp: _messages.last.timestamp,
+                      );
+                  });
+              }
+              _scrollToBottom();
+          }
+          
+          if (_messages.isNotEmpty) {
+            _speak(fullResponse.split("__JSON_START__")[0], messageTimestamp: _messages.last.timestamp);
+          }
+          
+      } catch (e) {
+          debugPrint("Failed to send system event: $e");
+      }
   }
 
   Widget _buildTypingIndicator() {
@@ -950,86 +1020,7 @@ class _ChatScreenState extends State<ChatScreen> with SingleTickerProviderStateM
     );
   }
 
-  Widget _buildInputArea() {
-    return Container(
-      padding: const EdgeInsets.all(20),
-      decoration: BoxDecoration(
-        color: _bgStart, // Solid background
-        border: Border(top: BorderSide(color: _borderColor)),
-      ),
-      child: Row(
-        children: [
-          Expanded(
-            child: Container(
-              decoration: BoxDecoration(
-                color: _surfaceColor, // Solid surface color
-                borderRadius: BorderRadius.circular(30),
-                border: Border.all(color: _borderColor),
-              ),
-              child: TextField(
-                controller: _controller,
-                enabled: !(_isLoading || _isStreaming),
-                style: GoogleFonts.roboto(color: _textColor, fontSize: 16), // Readable font
-                cursorColor: _iconColor,
-                decoration: InputDecoration(
-                  hintText: (_isLoading || _isStreaming) ? "Please wait..." : "Enter command...",
-                  hintStyle: GoogleFonts.roboto(color: _textSecondaryColor),
-                  border: InputBorder.none,
-                  contentPadding: const EdgeInsets.symmetric(horizontal: 24, vertical: 14),
-                ),
-                onSubmitted: (_) => _sendMessage(),
-              ),
-            ),
-          ),
-          const SizedBox(width: 12),
-          
-          // Mic Button
-          GestureDetector(
-            onLongPress: _speechEnabled ? _startListening : null,
-            onLongPressUp: _speechEnabled ? _stopListening : null,
-            onTap: () {
-                if (!_speechEnabled) {
-                    _showGoogleAppWarning();
-                } else {
-                    _isListening ? _stopListening() : _startListening();
-                }
-            },
-            child: Container(
-               padding: const EdgeInsets.all(12),
-               decoration: BoxDecoration(
-                 shape: BoxShape.circle,
-                 color: _isListening ? Colors.redAccent : _surfaceColor,
-                 border: Border.all(color: _speechEnabled ? _borderColor : Colors.orange.withOpacity(0.5)),
-               ),
-               child: Icon(
-                 !_speechEnabled ? Icons.mic_off : (_isListening ? Icons.mic : Icons.mic_none),
-                 color: !_speechEnabled ? Colors.orange : (_isListening ? Colors.white : _iconColor),
-               ),
-            ),
-          ),
-          const SizedBox(width: 8),
 
-          Opacity(
-            opacity: (_isLoading || _isStreaming) ? 0.5 : 1.0,
-            child: Container(
-              decoration: BoxDecoration(
-                shape: BoxShape.circle,
-                gradient: LinearGradient(
-                  colors: [_iconColor, _glowColor1],
-                  begin: Alignment.topLeft,
-                  end: Alignment.bottomRight,
-                ),
-              ),
-              child: IconButton(
-                icon: Icon(Icons.send_rounded, color: _isDarkMode ? Colors.black : Colors.white),
-                onPressed: (_isLoading || _isStreaming) ? null : _sendMessage,
-              ),
-            ),
-          ),
-        ],
-      ),
-    );
-  }
 }
 
 class _TypingDots extends StatefulWidget {

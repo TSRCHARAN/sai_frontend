@@ -3,12 +3,20 @@ class UserProfile {
   final String? coreValues;
   final String? communicationStyle;
   final String? lifePhase;
+  final String? interests;
+  final String? favorites;
+  final String? speechPatterns;
+  final String? birthday;
 
   UserProfile({
     this.name,
     this.coreValues,
     this.communicationStyle,
     this.lifePhase,
+    this.interests,
+    this.favorites,
+    this.speechPatterns,
+    this.birthday,
   });
 
   factory UserProfile.fromJson(Map<String, dynamic> json) {
@@ -17,6 +25,10 @@ class UserProfile {
       coreValues: json['core_values'],
       communicationStyle: json['communication_style'],
       lifePhase: json['life_phase'],
+      interests: json['interests'],
+      favorites: json['favorites'],
+      speechPatterns: json['speech_patterns'],
+      birthday: json['birthday'],
     );
   }
 
@@ -26,6 +38,10 @@ class UserProfile {
       'core_values': coreValues,
       'communication_style': communicationStyle,
       'life_phase': lifePhase,
+      'interests': interests,
+      'favorites': favorites,
+      'speech_patterns': speechPatterns,
+      'birthday': birthday,
     };
   }
 }

@@ -1,6 +1,7 @@
 import 'dart:convert';
 import 'package:http/http.dart' as http;
 import 'package:flutter_dotenv/flutter_dotenv.dart';
+import 'package:flutter_timezone/flutter_timezone.dart';
 import 'user_service.dart';
 import '../models/memory.dart';
 import '../models/user_profile.dart';
@@ -11,9 +12,11 @@ class ChatService {
   static String get baseUrl => dotenv.env['API_URL'] ?? "http://10.0.2.2:8000"; 
   final UserService _userService = UserService();
 
-  Future<Map<String, dynamic>> sendMessage(String message) async {
+  Future<String> getUserId() => _userService.getUserId();
+
+  Future<Map<String, dynamic>> sendMessage(String message, {String? sessionId}) async {
     final userId = await _userService.getUserId();
-    final sessionId = await _userService.getSessionId();
+    final effectiveSessionId = sessionId ?? await _userService.getSessionId();
 
     try {
       final response = await http.post(
@@ -21,7 +24,7 @@ class ChatService {
         headers: {"Content-Type": "application/json"},
         body: jsonEncode({
           "user_id": userId,
-          "session_id": sessionId,
+          "session_id": effectiveSessionId,
           "message": message,
         }),
       );
@@ -36,16 +39,31 @@ class ChatService {
     }
   }
 
-  Stream<String> sendMessageStream(String message) async* {
+  Stream<String> sendMessageStream(String message, {String? sessionId}) async* {
     final userId = await _userService.getUserId();
-    final sessionId = await _userService.getSessionId();
+    final effectiveSessionId = sessionId ?? await _userService.getSessionId();
+    
+    String timezoneName = "UTC";
+    try {
+      final dynamic timezoneObj = await FlutterTimezone.getLocalTimezone();
+      // Handle both String (newer versions) and Object (older/custom versions)
+      if (timezoneObj is String) {
+        timezoneName = timezoneObj;
+      } else if (timezoneObj != null) {
+        // Assume it's the TimezoneInfo object with .identifier
+        timezoneName = timezoneObj.identifier;
+      }
+    } catch (e) {
+      print("Timezone fetch error: $e");
+    }
 
     final request = http.Request('POST', Uri.parse("$baseUrl/chat_stream"));
     request.headers['Content-Type'] = 'application/json';
     request.body = jsonEncode({
       "user_id": userId,
-      "session_id": sessionId,
+      "session_id": effectiveSessionId,
       "message": message,
+      "timezone": timezoneName,
     });
 
     try {
@@ -65,15 +83,15 @@ class ChatService {
     }
   }
 
-  Stream<String> getWelcomeStream() async* {
+  Stream<String> getWelcomeStream({String? sessionId}) async* {
     final userId = await _userService.getUserId();
-    final sessionId = await _userService.getSessionId();
+    final effectiveSessionId = sessionId ?? await _userService.getSessionId();
 
     final request = http.Request('POST', Uri.parse("$baseUrl/welcome_stream"));
     request.headers['Content-Type'] = 'application/json';
     request.body = jsonEncode({
       "user_id": userId,
-      "session_id": sessionId,
+      "session_id": effectiveSessionId,
       "message": "INIT_WELCOME",
     });
 
@@ -117,6 +135,22 @@ class ChatService {
 
       if (response.statusCode != 200) {
         throw Exception("Failed to delete memory: ${response.statusCode}");
+      }
+    } catch (e) {
+      throw Exception("Network error: $e");
+    }
+  }
+
+  Future<void> updateMemory(int id, String content) async {
+    try {
+      final response = await http.put(
+        Uri.parse("$baseUrl/memories/$id"),
+        headers: {"Content-Type": "application/json"},
+        body: jsonEncode({"content": content}),
+      );
+
+      if (response.statusCode != 200) {
+        throw Exception("Failed to update memory: ${response.statusCode}");
       }
     } catch (e) {
       throw Exception("Network error: $e");

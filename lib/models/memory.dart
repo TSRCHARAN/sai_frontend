@@ -20,8 +20,15 @@ class Memory {
       id: json['id'],
       content: json['content'],
       type: json['memory_type'],
-      createdAt: DateTime.parse(json['created_at']),
-      targetTime: json['target_time'] != null ? DateTime.parse(json['target_time']) : null,
+      // Append 'Z' to force UTC parsing if not present, then convert to Local
+      createdAt: DateTime.parse(json['created_at'].toString().endsWith('Z') 
+          ? json['created_at'] 
+          : "${json['created_at']}Z").toLocal(),
+      targetTime: json['target_time'] != null 
+          ? DateTime.parse(json['target_time'].toString().endsWith('Z') 
+              ? json['target_time'] 
+              : "${json['target_time']}Z").toLocal() 
+          : null,
       planStatus: json['plan_status'],
     );
   }

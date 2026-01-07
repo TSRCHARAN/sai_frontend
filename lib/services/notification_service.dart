@@ -1,90 +1,169 @@
+import 'package:firebase_core/firebase_core.dart';
+import 'package:firebase_messaging/firebase_messaging.dart';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
-import 'package:flutter/foundation.dart';
-import 'package:flutter/services.dart';
-import 'package:timezone/timezone.dart' as tz;
-import 'package:timezone/data/latest.dart' as tz;
-import 'package:flutter_timezone/flutter_timezone.dart';
-import 'dart:io';
+import 'dart:convert';
 import 'dart:async';
+import 'package:http/http.dart' as http;
+import 'package:flutter_dotenv/flutter_dotenv.dart';
+import 'package:flutter_timezone/flutter_timezone.dart';
+import 'package:timezone/data/latest_all.dart' as tz;
+import 'package:timezone/timezone.dart' as tz;
+import 'package:flutter/foundation.dart';
+import 'user_service.dart';
 
 class NotificationService {
   static final NotificationService _instance = NotificationService._internal();
   factory NotificationService() => _instance;
   NotificationService._internal();
 
-  final FlutterLocalNotificationsPlugin flutterLocalNotificationsPlugin =
-      FlutterLocalNotificationsPlugin();
+  final FirebaseMessaging _firebaseMessaging = FirebaseMessaging.instance;
+  final FlutterLocalNotificationsPlugin _localNotifications = FlutterLocalNotificationsPlugin();
+  final UserService _userService = UserService();
+  
+  // Stream for handling notification taps
+  final StreamController<String?> selectNotificationStream = StreamController<String?>.broadcast();
 
-  final StreamController<String?> selectNotificationStream =
-      StreamController<String?>.broadcast();
+  static String get baseUrl => dotenv.env['API_URL'] ?? "http://10.0.2.2:8000";
 
-  Future<void> init() async {
-    tz.initializeTimeZones();
+  bool _isInitialized = false;
+
+  Future<void> initialize() async {
+    if (_isInitialized) return;
     
     try {
-      final timeZoneInfo = await FlutterTimezone.getLocalTimezone();
-      tz.setLocalLocation(tz.getLocation(timeZoneInfo.identifier));
+      tz.initializeTimeZones();
     } catch (e) {
-      print("Failed to set local timezone: $e");
-      // Fallback to UTC or default if needed, but usually this works.
+      print("Timezone init error: $e");
+    }
+
+    NotificationSettings settings = await _firebaseMessaging.requestPermission(
+      alert: true,
+      badge: true,
+      sound: true,
+      provisional: false,
+    );
+
+    if (settings.authorizationStatus != AuthorizationStatus.authorized) {
+      print('User declined notification permission');
+      // Continue anyway to allow local notifications
     }
 
     const AndroidInitializationSettings initializationSettingsAndroid =
         AndroidInitializationSettings('@mipmap/ic_launcher');
-
-    final DarwinInitializationSettings initializationSettingsDarwin =
-        DarwinInitializationSettings(
-      requestAlertPermission: true,
-      requestBadgePermission: true,
-      requestSoundPermission: true,
-      defaultPresentAlert: true, // Show notification when app is open
-      defaultPresentBadge: true,
-      defaultPresentSound: true,
-    );
+    
+    const DarwinInitializationSettings initializationSettingsIOS = DarwinInitializationSettings();
 
     final InitializationSettings initializationSettings = InitializationSettings(
       android: initializationSettingsAndroid,
-      iOS: initializationSettingsDarwin,
-      macOS: initializationSettingsDarwin,
+      iOS: initializationSettingsIOS,
     );
 
-    await flutterLocalNotificationsPlugin.initialize(
+    await _localNotifications.initialize(
       initializationSettings,
-      onDidReceiveNotificationResponse: (NotificationResponse response) async {
+      onDidReceiveNotificationResponse: (NotificationResponse response) {
         selectNotificationStream.add(response.payload);
       },
     );
-    
-    if (Platform.isAndroid) {
-      final androidPlugin = flutterLocalNotificationsPlugin
-          .resolvePlatformSpecificImplementation<
-              AndroidFlutterLocalNotificationsPlugin>();
 
-      // Ensure channel exists with the right importance (Android caches channel settings).
-      await androidPlugin?.createNotificationChannel(
-        const AndroidNotificationChannel(
-          'sai_reminders_v3', // Bumped version to reset settings
-          'S.AI Reminders',
-          description: 'Notifications for your plans and memories',
-          importance: Importance.max,
-        ),
-      );
-
-      final notifGranted = await androidPlugin?.requestNotificationsPermission();
-      final exactGranted = await androidPlugin?.requestExactAlarmsPermission();
-
-      if (kDebugMode) {
-        print('DEBUG: Notifications permission granted? $notifGranted');
-        print('DEBUG: Exact alarms permission granted? $exactGranted');
+    // Foreground Handler (FCM)
+    FirebaseMessaging.onMessage.listen((RemoteMessage message) {
+      if (message.notification != null) {
+        _showLocalNotification(message);
       }
+    });
+
+    try {
+      // Check for supported platforms for FCM Token
+      if (!kIsWeb) {
+          // On Web, getToken requires VAPID key usually, checking if it works without
+          String? token = await _firebaseMessaging.getToken();
+          if (token != null) {
+             await _sendTokenToBackend(token);
+          }
+           _firebaseMessaging.onTokenRefresh.listen((newToken) {
+             _sendTokenToBackend(newToken);
+          });
+      } else {
+          // Simplification for Web Demo: Skip FCM Token sync if configuration (VAPID) is missing
+          // Use a dummy token or try-catch
+          try {
+             String? token = await _firebaseMessaging.getToken();
+             if (token != null) await _sendTokenToBackend(token);
+          } catch (e) {
+             print("Web FCM Token skip: $e");
+          }
+      }
+    } catch (e) {
+      print("FCM Token Error: $e");
+    }
+
+    _isInitialized = true;
+  }
+  
+  Future<void> syncTimezone() async {
+    try {
+      String? token = await _firebaseMessaging.getToken();
+      if (token != null) {
+        await _sendTokenToBackend(token);
+      }
+    } catch (e) {}
+  }
+
+  Future<void> _showLocalNotification(RemoteMessage message) async {
+    const AndroidNotificationDetails androidPlatformChannelSpecifics =
+        AndroidNotificationDetails(
+      'sai_proactive_channel', 
+      'S.AI Messages', 
+      channelDescription: 'Notifications from your AI friend',
+      importance: Importance.max,
+      priority: Priority.high,
+      showWhen: true,
+    );
+    
+    const NotificationDetails platformChannelSpecifics =
+        NotificationDetails(android: androidPlatformChannelSpecifics);
+    
+    // Use a random ID or hashcode
+    await _localNotifications.show(
+      message.hashCode,
+      message.notification?.title ?? "S.AI",
+      message.notification?.body,
+      platformChannelSpecifics,
+      payload: message.data['type'] ?? message.notification?.body,
+    );
+  }
+
+  Future<void> _sendTokenToBackend(String token) async {
+    final userId = await _userService.getUserId();
+    
+    String timezone = "UTC";
+    try {
+      dynamic tzResult = await FlutterTimezone.getLocalTimezone();
+      timezone = tzResult.toString();
+    } catch (e) {
+      print("Failed to get timezone: $e");
+    }
+    
+    try {
+      await http.post(
+        Uri.parse("$baseUrl/fcm_token"),
+        headers: {"Content-Type": "application/json"},
+        body: jsonEncode({
+          "user_id": userId,
+          "token": token,
+          "timezone": timezone
+        }),
+      );
+      print("FCM Token synced to server.");
+    } catch (e) {
+      print("Failed to sync FCM token: $e");
     }
   }
 
   Future<NotificationResponse?> getLaunchNotification() async {
-    final NotificationAppLaunchDetails? notificationAppLaunchDetails =
-        await flutterLocalNotificationsPlugin.getNotificationAppLaunchDetails();
-    if (notificationAppLaunchDetails?.didNotificationLaunchApp ?? false) {
-      return notificationAppLaunchDetails?.notificationResponse;
+    final details = await _localNotifications.getNotificationAppLaunchDetails();
+    if (details != null && details.didNotificationLaunchApp) {
+      return details.notificationResponse;
     }
     return null;
   }
@@ -95,131 +174,46 @@ class NotificationService {
     required String body,
     required DateTime scheduledTime,
   }) async {
-    if (scheduledTime.isBefore(DateTime.now())) {
-        if (kDebugMode) {
-            print("DEBUG: Skipped scheduling because time is in the past: $scheduledTime vs ${DateTime.now()}");
-        }
-        return;
+    // Cross-Platform Schedule Strategy:
+    // For this build, we use a simple Timer-based schedule which works on Web and Mobile.
+    // This avoids compilation errors with 'zonedSchedule' and 'UILocalNotificationDateInterpretation'
+    // which are missing or behave differently in the Web build of local_notifications.
+    
+    final delay = scheduledTime.difference(DateTime.now());
+    if (!delay.isNegative) {
+        Timer(delay, () async {
+             const AndroidNotificationDetails androidDetails = AndroidNotificationDetails(
+                'sai_reminders',
+                'Reminders',
+                channelDescription: 'Scheduled reminders',
+                importance: Importance.high,
+                priority: Priority.high,
+            );
+            const NotificationDetails platformDetails = NotificationDetails(android: androidDetails);
+
+            await _localNotifications.show(
+                id,
+                title,
+                body,
+                platformDetails,
+                payload: body
+            );
+        });
+        print("Scheduled (Timer) notification $id in ${delay.inSeconds}s");
     }
+  }
 
-    // CRITICAL: Convert UTC DateTime to Local DateTime components before creating TZDateTime.
-    // tz.TZDateTime.from() uses components as-is. 
-    // If we pass 18:00 UTC, it creates 18:00 Local (which might be 12:30 UTC, i.e., in the past).
-    final tzDateTime = tz.TZDateTime.from(scheduledTime.toLocal(), tz.local);
-
-    if (kDebugMode) {
-        print("DEBUG: Scheduling for Local: $tzDateTime (Original UTC: $scheduledTime)");
-    }
-
-    const details = NotificationDetails(
-      android: AndroidNotificationDetails(
-        'sai_reminders_v3',
-        'S.AI Reminders',
-        channelDescription: 'Notifications for your plans and memories',
-        importance: Importance.max,
-        priority: Priority.high,
-        ticker: 'ticker',
-        visibility: NotificationVisibility.public, // Shows content on lock screen
-        category: AndroidNotificationCategory.reminder, // Helps OS prioritize
-      ),
-      iOS: DarwinNotificationDetails(),
-    );
-
-    // Production-safe scheduling:
-    // - Prefer exact alarms when allowed
-    // - Automatically fall back to inexact when the OS blocks exact alarms
+  Future<void> scheduleFromBackend(String content, String targetTimeStr) async {
     try {
-      await flutterLocalNotificationsPlugin.zonedSchedule(
-        id,
-        title,
-        body,
-        tzDateTime,
-        details,
-        androidScheduleMode: AndroidScheduleMode.exactAllowWhileIdle,
-        payload: body,
-      );
-      if (kDebugMode) {
-        print('DEBUG: Scheduled with exactAllowWhileIdle');
-      }
-    } on PlatformException catch (e) {
-      if (kDebugMode) {
-        print('DEBUG: Exact schedule failed (${e.code}): ${e.message}');
-      }
-      // Common on Android 12+ when exact alarms are not permitted.
-      if (e.code == 'exact_alarms_not_permitted') {
-        await flutterLocalNotificationsPlugin.zonedSchedule(
-          id,
-          title,
-          body,
-          tzDateTime,
-          details,
-          androidScheduleMode: AndroidScheduleMode.inexactAllowWhileIdle,
-          payload: body,
-        );
-        if (kDebugMode) {
-          print('DEBUG: Fallback scheduled with inexactAllowWhileIdle');
-        }
-      } else {
-        rethrow;
-      }
-    }
-
-    if (kDebugMode) {
-      try {
-        final pending = await flutterLocalNotificationsPlugin.pendingNotificationRequests();
-        final hasThis = pending.any((p) => p.id == id);
-        print('DEBUG: Pending notifications count=${pending.length}, contains id=$id? $hasThis');
-      } catch (e) {
-        print('DEBUG: pendingNotificationRequests failed: $e');
-      }
-
-      // Debug probe: if this does NOT show immediately, then the OS/app/channel is blocking notifications.
-      // This isolates scheduling/alarm issues vs. notification permission/channel issues.
-      try {
-        await flutterLocalNotificationsPlugin.show(
-          id + 1000000,
-          'DEBUG: Notifications pipeline OK',
-          'If you see this, the OS can display notifications. Scheduled reminder is set for $tzDateTime.',
-          details,
-        );
-      } catch (e) {
-        print('DEBUG: Immediate show() failed: $e');
-      }
-    }
-  }
-
-  Future<void> cancelNotification(int id) async {
-    await flutterLocalNotificationsPlugin.cancel(id);
-  }
-  
-  Future<void> cancelAll() async {
-    await flutterLocalNotificationsPlugin.cancelAll();
-  }
-
-  static Future<void> scheduleFromInsights(List<dynamic> insights) async {
-    for (var item in insights) {
-      if (item['target_time'] != null) {
-        try {
-          final DateTime scheduledTime = DateTime.parse(item['target_time']);
-          final String content = item['content'] ?? "Reminder";
-          
-          // Generate a unique ID based on content hash (simple but effective for now)
-          final int id = content.hashCode;
-          
-          await _instance.scheduleNotification(
-            id: id,
-            title: "S.AI Reminder",
+        DateTime targetTime = DateTime.parse(targetTimeStr); 
+        await scheduleNotification(
+            id: targetTime.hashCode,
+            title: "Reminder",
             body: content,
-            scheduledTime: scheduledTime,
-          );
-          
-          if (kDebugMode) {
-             print("DEBUG: Scheduled notification '$content' for $scheduledTime");
-          }
-        } catch (e) {
-          print("Failed to schedule insight: $e");
-        }
-      }
+            scheduledTime: targetTime,
+        );
+    } catch (e) {
+        print("Failed to schedule from backend: $e");
     }
   }
 }

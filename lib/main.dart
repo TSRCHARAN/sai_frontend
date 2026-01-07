@@ -1,16 +1,36 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_dotenv/flutter_dotenv.dart';
+import 'package:firebase_core/firebase_core.dart';
+import 'package:firebase_messaging/firebase_messaging.dart';
 import 'screens/splash_screen.dart';
 import 'services/notification_service.dart';
+
+// Top-level function for background handling
+@pragma('vm:entry-point')
+Future<void> _firebaseMessagingBackgroundHandler(RemoteMessage message) async {
+  await Firebase.initializeApp();
+  print("Handling a background message: ${message.messageId}");
+}
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
   
   // To build for production: flutter build apk --dart-define=ENV=prod
   const env = String.fromEnvironment('ENV', defaultValue: 'dev');
-  await dotenv.load(fileName: ".env.$env"); // Loads .env.dev (default) or .env.prod
+  await dotenv.load(fileName: ".env.$env");
   
-  await NotificationService().init();
+  try {
+    await Firebase.initializeApp();
+    
+    // Register background handler
+    FirebaseMessaging.onBackgroundMessage(_firebaseMessagingBackgroundHandler);
+    
+    // Initialize Notification Service
+    await NotificationService().initialize();
+    
+  } catch (e) {
+    print("Initialization Error: $e");
+  }
 
   runApp(const SaiApp());
 }

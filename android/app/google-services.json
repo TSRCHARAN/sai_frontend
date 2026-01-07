@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "593576919786",
+    "project_id": "sai-app-dded1",
+    "storage_bucket": "sai-app-dded1.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:593576919786:android:fefd9fa1127bfe618d4d93",
+        "android_client_info": {
+          "package_name": "com.example.saifrontend"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyDY0BusmDHDlIfdxJWr26-K75xfMCwNW70"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

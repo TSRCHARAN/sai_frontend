@@ -2,7 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'dart:ui';
 import '../models/user_profile.dart';
-import '../services/chat_service.dart';
+import '../services/profile_service.dart';
 
 class ProfileScreen extends StatefulWidget {
   const ProfileScreen({super.key});
@@ -12,44 +12,33 @@ class ProfileScreen extends StatefulWidget {
 }
 
 class _ProfileScreenState extends State<ProfileScreen> {
-  final ChatService _chatService = ChatService();
   final _formKey = GlobalKey<FormState>();
-  
-  late TextEditingController _nameController;
-  late TextEditingController _valuesController;
-  late TextEditingController _styleController;
-  late TextEditingController _phaseController;
-
+  final _profileService = ProfileService();
   bool _isLoading = true;
-  bool _isSaving = false;
-  bool _isDarkMode = true;
+  bool _isDarkMode = false; // Default to light, will load
+
+  // Controllers
+  final _nameController = TextEditingController();
+  final _birthdayController = TextEditingController();
+  final _interestsController = TextEditingController();
+  final _favoritesController = TextEditingController();
+  final _speechPatternsController = TextEditingController();
+  final _communicationStyleController = TextEditingController();
+  final _lifePhaseController = TextEditingController();
+  final _coreValuesController = TextEditingController();
 
   @override
   void initState() {
     super.initState();
-    _nameController = TextEditingController();
-    _valuesController = TextEditingController();
-    _styleController = TextEditingController();
-    _phaseController = TextEditingController();
-    
     _loadTheme();
     _loadProfile();
-  }
-
-  @override
-  void dispose() {
-    _nameController.dispose();
-    _valuesController.dispose();
-    _styleController.dispose();
-    _phaseController.dispose();
-    super.dispose();
   }
 
   Future<void> _loadTheme() async {
     final prefs = await SharedPreferences.getInstance();
     setState(() {
       if (prefs.containsKey('isDarkMode')) {
-        _isDarkMode = prefs.getBool('isDarkMode') ?? true;
+        _isDarkMode = prefs.getBool('isDarkMode') ?? false;
       } else {
         var brightness = PlatformDispatcher.instance.platformBrightness;
         _isDarkMode = brightness == Brightness.dark;
@@ -58,202 +47,205 @@ class _ProfileScreenState extends State<ProfileScreen> {
   }
 
   Future<void> _loadProfile() async {
-    setState(() => _isLoading = true);
     try {
-      final profile = await _chatService.fetchProfile();
-      setState(() {
-        _nameController.text = profile.name ?? '';
-        _valuesController.text = profile.coreValues ?? '';
-        _styleController.text = profile.communicationStyle ?? '';
-        _phaseController.text = profile.lifePhase ?? '';
-        _isLoading = false;
-      });
+      final profile = await _profileService.fetchUserProfile();
+      if (profile != null) {
+        setState(() {
+          _nameController.text = profile.name ?? '';
+          _birthdayController.text = profile.birthday ?? '';
+          _interestsController.text = profile.interests ?? '';
+          _favoritesController.text = profile.favorites ?? '';
+          _speechPatternsController.text = profile.speechPatterns ?? '';
+          _communicationStyleController.text = profile.communicationStyle ?? '';
+          _lifePhaseController.text = profile.lifePhase ?? '';
+          _coreValuesController.text = profile.coreValues ?? '';
+        });
+      }
     } catch (e) {
-      setState(() => _isLoading = false);
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Failed to load profile: $e')),
+          SnackBar(content: Text('Error loading profile: $e')),
         );
       }
+    } finally {
+      if (mounted) setState(() => _isLoading = false);
     }
   }
 
   Future<void> _saveProfile() async {
     if (!_formKey.currentState!.validate()) return;
 
-    setState(() => _isSaving = true);
+    setState(() => _isLoading = true);
     try {
-      final profile = UserProfile(
-        name: _nameController.text.trim(),
-        coreValues: _valuesController.text.trim(),
-        communicationStyle: _styleController.text.trim(),
-        lifePhase: _phaseController.text.trim(),
+      final newProfile = UserProfile(
+        name: _nameController.text,
+        birthday: _birthdayController.text,
+        interests: _interestsController.text,
+        favorites: _favoritesController.text,
+        speechPatterns: _speechPatternsController.text,
+        communicationStyle: _communicationStyleController.text,
+        lifePhase: _lifePhaseController.text,
+        coreValues: _coreValuesController.text,
       );
-      
-      await _chatService.updateProfile(profile);
-      
+
+      await _profileService.updateUserProfile(newProfile);
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Profile updated successfully')),
+          const SnackBar(content: Text('Profile updated! SAI will remember this.')),
         );
         Navigator.pop(context);
       }
     } catch (e) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Failed to save: $e')),
+          SnackBar(content: Text('Error saving profile: $e')),
         );
       }
     } finally {
-      if (mounted) setState(() => _isSaving = false);
+      if (mounted) setState(() => _isLoading = false);
     }
+  }
+
+  Widget _buildSectionHeader(String title, IconData icon) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 16.0),
+      child: Row(
+        children: [
+          Icon(icon, color: _isDarkMode ? Colors.blueAccent : Colors.deepPurple),
+          const SizedBox(width: 8),
+          Text(
+            title,
+            style: TextStyle(
+              fontSize: 18,
+              fontWeight: FontWeight.bold,
+              color: _isDarkMode ? Colors.white : Colors.deepPurple,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildTextField(
+    TextEditingController controller,
+    String label,
+    String hint, {
+    int maxLines = 1,
+  }) {
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 12.0),
+      child: TextFormField(
+        controller: controller,
+        maxLines: maxLines,
+        style: TextStyle(color: _isDarkMode ? Colors.white : Colors.black87),
+        decoration: InputDecoration(
+          labelText: label,
+          labelStyle: TextStyle(color: _isDarkMode ? Colors.white70 : Colors.deepPurple),
+          hintText: hint,
+          hintStyle: TextStyle(color: _isDarkMode ? Colors.white38 : Colors.grey),
+          border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
+          enabledBorder: OutlineInputBorder(
+            borderRadius: BorderRadius.circular(12),
+            borderSide: BorderSide(color: _isDarkMode ? Colors.white24 : Colors.grey),
+          ),
+          filled: true,
+          fillColor: _isDarkMode ? const Color(0xFF1E293B) : Colors.grey[50], // Dark Slate vs Light Grey
+        ),
+      ),
+    );
   }
 
   @override
   Widget build(BuildContext context) {
-    final bgColor = _isDarkMode ? const Color(0xFF0B0F19) : const Color(0xFFDCE0E5);
-    final cardColor = _isDarkMode ? const Color(0xFF1C2333) : const Color(0xFFF8F9FA);
-    final textColor = _isDarkMode ? Colors.white : const Color(0xFF1E293B);
-    final subTextColor = _isDarkMode ? Colors.white.withOpacity(0.5) : const Color(0xFF64748B);
-    final borderColor = _isDarkMode ? Colors.white.withOpacity(0.1) : const Color(0xFFE2E8F0);
-    final accentColor = _isDarkMode ? const Color(0xFF00F3FF) : const Color(0xFF2563EB);
-
     return Scaffold(
-      backgroundColor: bgColor,
+      backgroundColor: _isDarkMode ? const Color(0xFF0F172A) : Colors.white,
       appBar: AppBar(
         title: const Text('My Profile'),
-        backgroundColor: Colors.transparent,
-        elevation: 0,
-        foregroundColor: textColor,
+        backgroundColor: _isDarkMode ? const Color(0xFF1E293B) : Colors.deepPurple,
+        foregroundColor: Colors.white,
         actions: [
-          if (!_isLoading)
-            IconButton(
-              icon: _isSaving 
-                ? SizedBox(width: 20, height: 20, child: CircularProgressIndicator(strokeWidth: 2, color: textColor))
-                : const Icon(Icons.check),
-              onPressed: _isSaving ? null : _saveProfile,
-            ),
+          IconButton(
+            icon: const Icon(Icons.save),
+            onPressed: _saveProfile,
+          ),
         ],
       ),
       body: _isLoading
-          ? Center(child: CircularProgressIndicator(color: textColor))
+          ? const Center(child: CircularProgressIndicator())
           : SingleChildScrollView(
-              padding: const EdgeInsets.all(20),
+              padding: const EdgeInsets.all(16.0),
               child: Form(
                 key: _formKey,
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    _buildSectionHeader("Identity", textColor),
-                    const SizedBox(height: 10),
-                    _buildTextField(
-                      controller: _nameController,
-                      label: "Name",
-                      hint: "What should I call you?",
-                      icon: Icons.person_outline,
-                      cardColor: cardColor,
-                      textColor: textColor,
-                      subTextColor: subTextColor,
-                      borderColor: borderColor,
+                    const Text(
+                      "Help SAI know the real you.",
+                      style: TextStyle(color: Colors.grey, fontSize: 16),
                     ),
-                    const SizedBox(height: 24),
+                    const SizedBox(height: 20),
                     
-                    _buildSectionHeader("The Real You", textColor),
-                    const SizedBox(height: 10),
+                    _buildSectionHeader("The Basics", Icons.person_outline),
+                    _buildTextField(_nameController, "Name", "What should I call you?"),
+                    _buildTextField(_birthdayController, "Birthday", "YYYY-MM-DD"),
+
+                    _buildSectionHeader("Personality & Style", Icons.chat_bubble_outline),
                     _buildTextField(
-                      controller: _valuesController,
-                      label: "Core Values",
-                      hint: "What matters most to you? (e.g. Honesty, Growth)",
-                      icon: Icons.favorite_border,
-                      cardColor: cardColor,
-                      textColor: textColor,
-                      subTextColor: subTextColor,
-                      borderColor: borderColor,
+                      _speechPatternsController, 
+                      "Slang / Catchphrases", 
+                      "e.g. 'Sahi hai', 'Arre yaar', 'No way'",
+                    ),
+                    _buildTextField(
+                      _communicationStyleController, 
+                      "Communication Style", 
+                      "e.g. Direct, Empathetic, Analytical",
+                    ),
+
+                    _buildSectionHeader("The Good Stuff", Icons.favorite_border),
+                    _buildTextField(
+                      _favoritesController, 
+                      "Favorites", 
+                      "Movies, Quotes, Books, Food...",
                       maxLines: 3,
                     ),
-                    const SizedBox(height: 16),
                     _buildTextField(
-                      controller: _styleController,
-                      label: "Communication Style",
-                      hint: "How do you like to talk? (e.g. Direct, Casual)",
-                      icon: Icons.chat_bubble_outline,
-                      cardColor: cardColor,
-                      textColor: textColor,
-                      subTextColor: subTextColor,
-                      borderColor: borderColor,
+                      _interestsController, 
+                      "Interests / Hobbies", 
+                      "Running, Coding, Gaming...",
                       maxLines: 2,
                     ),
-                    const SizedBox(height: 16),
+
+                    _buildSectionHeader("Deeper Context", Icons.psychology_outlined),
                     _buildTextField(
-                      controller: _phaseController,
-                      label: "Current Life Phase",
-                      hint: "What's your main focus right now?",
-                      icon: Icons.timeline,
-                      cardColor: cardColor,
-                      textColor: textColor,
-                      subTextColor: subTextColor,
-                      borderColor: borderColor,
+                      _lifePhaseController, 
+                      "Current Life Phase", 
+                      "e.g. Student, Job hunting, Checkered past...",
+                      maxLines: 2,
+                    ),
+                    _buildTextField(
+                      _coreValuesController, 
+                      "Core Values", 
+                      "e.g. Honesty, Hard work, Creativity",
                       maxLines: 2,
                     ),
                     
-                    const SizedBox(height: 30),
-                    Center(
-                      child: Text(
-                        "S.AI uses this to understand you better.\nIt updates automatically as we chat, but you can edit it here.",
-                        textAlign: TextAlign.center,
-                        style: TextStyle(color: subTextColor, fontSize: 12),
+                    const SizedBox(height: 24),
+                    SizedBox(
+                      width: double.infinity,
+                      child: ElevatedButton(
+                        onPressed: _saveProfile,
+                        style: ElevatedButton.styleFrom(
+                          padding: const EdgeInsets.symmetric(vertical: 16),
+                          backgroundColor: Colors.deepPurple,
+                          foregroundColor: Colors.white,
+                        ),
+                        child: const Text("Save Profile"),
                       ),
                     ),
                   ],
                 ),
               ),
             ),
-    );
-  }
-
-  Widget _buildSectionHeader(String title, Color color) {
-    return Text(
-      title.toUpperCase(),
-      style: TextStyle(
-        color: color.withOpacity(0.7),
-        fontSize: 12,
-        fontWeight: FontWeight.bold,
-        letterSpacing: 1.5,
-      ),
-    );
-  }
-
-  Widget _buildTextField({
-    required TextEditingController controller,
-    required String label,
-    required String hint,
-    required IconData icon,
-    required Color cardColor,
-    required Color textColor,
-    required Color subTextColor,
-    required Color borderColor,
-    int maxLines = 1,
-  }) {
-    return Container(
-      decoration: BoxDecoration(
-        color: cardColor,
-        borderRadius: BorderRadius.circular(12),
-        border: Border.all(color: borderColor),
-      ),
-      child: TextFormField(
-        controller: controller,
-        maxLines: maxLines,
-        style: TextStyle(color: textColor),
-        decoration: InputDecoration(
-          labelText: label,
-          labelStyle: TextStyle(color: subTextColor),
-          hintText: hint,
-          hintStyle: TextStyle(color: subTextColor.withOpacity(0.5)),
-          prefixIcon: Icon(icon, color: subTextColor),
-          border: InputBorder.none,
-          contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-        ),
-      ),
     );
   }
 }
