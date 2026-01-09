@@ -207,8 +207,13 @@ class _ChatScreenState extends State<ChatScreen> with SingleTickerProviderStateM
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
     if (state == AppLifecycleState.resumed) {
-      // App came to foreground. Sync timezone in case user traveled.
+      // App came to foreground. Sync timezone.
       NotificationService().syncTimezone();
+    } else if (state == AppLifecycleState.paused) {
+      // App went to background (minimized). Stop speaking.
+      if (_isSpeaking) {
+        _stopSpeaking();
+      }
     }
   }
 
@@ -407,6 +412,13 @@ class _ChatScreenState extends State<ChatScreen> with SingleTickerProviderStateM
   }
 
   void _handleNotificationTap(String payload) {
+    // 1. Navigation Check: Ensure we are viewing the Chat Screen
+    // This closes any open screens (Profile, Memory, etc.) when a notification is clicked.
+    if (mounted) {
+       Navigator.of(context).popUntil((route) => route.isFirst);
+    }
+
+    // 2. Trigger Logic
     // Instead of a dialog, we directly trigger the AI conversation.
     // This feels more seamless: You tap the notification, app opens, AI talks.
     _triggerContextualAI(payload);
@@ -608,11 +620,18 @@ class _ChatScreenState extends State<ChatScreen> with SingleTickerProviderStateM
       }
 
     } catch (e) {
-      // If welcome fails, just show a generic greeting locally or do nothing
+      // If welcome fails (offline?), show toast
+      if (mounted) {
+         ScaffoldMessenger.of(context).showSnackBar(
+             const SnackBar(content: Text("Connecting to S.AI..."), padding: EdgeInsets.all(0), behavior: SnackBarBehavior.floating),
+         );
+      }
+      
+      // Fallback local greeting so screen isn't empty
       if (_messages.isEmpty) {
          setState(() {
             _messages.add(ChatMessage(
-              text: "Hey! Ready to chat?",
+              text: "Hey! I'm having trouble connecting to my brain, but I'm here.",
               isUser: false,
               timestamp: DateTime.now(),
             ));
@@ -700,7 +719,8 @@ class _ChatScreenState extends State<ChatScreen> with SingleTickerProviderStateM
           if (parts.length > 1) {
               final jsonStr = parts[1].trim();
               try {
-                  final List<dynamic> insights = jsonDecode(jsonStr);
+                  final Map<String, dynamic> metadata = jsonDecode(jsonStr);
+                  final List<dynamic> insights = metadata['insights'] ?? [];
                   
                   // Check for 'schedule_local' flag
                   for (var item in insights) {
@@ -830,6 +850,7 @@ class _ChatScreenState extends State<ChatScreen> with SingleTickerProviderStateM
                     sessionId: widget.sessionId,
                     animation: _contentFadeAnimation,
                     onStopSpeaking: _stopSpeaking,
+                    onTitleTap: () => _showAboutDialog(context),
                     onThemeToggle: () async {
                       final prefs = await SharedPreferences.getInstance();
                       setState(() {
@@ -851,14 +872,115 @@ class _ChatScreenState extends State<ChatScreen> with SingleTickerProviderStateM
     );
   }
 
+  void _showAboutDialog(BuildContext context) {
+    // Helper to build rows
+    Widget buildFeatureRow(IconData icon, String title, String description) {
+       return Padding(
+         padding: const EdgeInsets.symmetric(vertical: 12),
+         child: Row(
+           crossAxisAlignment: CrossAxisAlignment.start,
+           children: [
+              Container(
+                 padding: const EdgeInsets.all(8),
+                 decoration: BoxDecoration(
+                    color: _isDarkMode ? Colors.blue.withOpacity(0.2) : Colors.deepPurple.shade50,
+                    borderRadius: BorderRadius.circular(8),
+                 ),
+                 child: Icon(icon, size: 24, color: _isDarkMode ? Colors.blueAccent : Colors.deepPurple),
+              ),
+              const SizedBox(width: 16),
+              Expanded(
+                 child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                       Text(title, style: TextStyle(
+                          fontWeight: FontWeight.bold, 
+                          fontSize: 15,
+                          color: _isDarkMode ? Colors.white : Colors.black87
+                       )),
+                       const SizedBox(height: 4),
+                       Text(description, style: TextStyle(
+                          fontSize: 13, 
+                          color: _isDarkMode ? Colors.white70 : Colors.grey.shade700,
+                          height: 1.4
+                       )),
+                    ],
+                 ),
+              )
+           ],
+         ),
+       );
+    }
+
+    showDialog(
+      context: context,
+      builder: (ctx) => Dialog(
+         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+         backgroundColor: _isDarkMode ? const Color(0xFF1E293B) : Colors.white,
+         child: Padding(
+            padding: const EdgeInsets.all(24),
+            child: Column(
+               mainAxisSize: MainAxisSize.min,
+               children: [
+                  Text("The S.AI Advantage", style: TextStyle(
+                     fontSize: 22, 
+                     fontWeight: FontWeight.bold,
+                     color: _isDarkMode ? Colors.white : Colors.black87
+                  )),
+                  const SizedBox(height: 8),
+                  Text("Proactive. Persistent. Private.", style: TextStyle(
+                     color: _isDarkMode ? Colors.blueAccent : Colors.deepPurple,
+                     fontWeight: FontWeight.w500,
+                     letterSpacing: 0.5
+                  )),
+                  const SizedBox(height: 24),
+                  
+                  // Content
+                  Flexible(
+                    child: SingleChildScrollView(
+                       child: Column(
+                          children: [
+                             buildFeatureRow(Icons.auto_awesome, "Contextual Intelligence", "I don't just chat; I understand you. I recall past discussions and preferences to make every interaction feel personal."),
+                             buildFeatureRow(Icons.bolt, "Proactive Initiative", "I don't wait for prompts. I anticipate your needs, send timely nudges, and keep your momentum alive."),
+                             buildFeatureRow(Icons.flag, "Goal Agent", "Turn intentions into reality. I break down complex goals into actionable steps and help you cross the finish line."),
+                             buildFeatureRow(Icons.shield_outlined, "Sovereign Privacy", "Your digital life, owned by you. 100% self-hosted architecture means your data never leaves your control."),
+                          ],
+                       ),
+                    ),
+                  ),
+                  
+                  const SizedBox(height: 24),
+                  SizedBox(
+                     width: double.infinity,
+                     child: ElevatedButton(
+                        onPressed: () => Navigator.pop(ctx),
+                        style: ElevatedButton.styleFrom(
+                           backgroundColor: _isDarkMode ? Colors.blueAccent : Colors.deepPurple,
+                           foregroundColor: Colors.white,
+                           shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                           padding: const EdgeInsets.symmetric(vertical: 14)
+                        ),
+                        child: const Text("Let's Go"),
+                     ),
+                  )
+               ],
+            ),
+         ),
+      )
+    );
+  }
+
 
 
 
 
   Widget _buildMessageList() {
     return GestureDetector(
+      behavior: HitTestBehavior.translucent, // Capture taps on empty space
       onTap: () {
-        if (_isSpeaking) _stopSpeaking();
+        if (_isSpeaking) {
+             _stopSpeaking();
+        }
         FocusScope.of(context).unfocus(); // Also dismiss keyboard
       },
       child: RepaintBoundary(
@@ -1012,9 +1134,22 @@ class _ChatScreenState extends State<ChatScreen> with SingleTickerProviderStateM
               bottomRight: Radius.circular(20),
             ),
             border: Border.all(color: _borderColor, width: 1),
-            // Removed BoxShadow for performance
           ),
-          child: _TypingDots(color: _iconColor),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+                Icon(Icons.bolt, color: _iconColor, size: 16),
+                const SizedBox(width: 8),
+                Text(
+                    "Thinking...", 
+                    style: GoogleFonts.inter(
+                        color: _textSecondaryColor, 
+                        fontSize: 12,
+                        fontWeight: FontWeight.w500
+                    )
+                ),
+            ],
+          ),
         ),
       ),
     );

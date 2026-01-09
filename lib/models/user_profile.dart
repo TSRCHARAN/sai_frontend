@@ -7,6 +7,7 @@ class UserProfile {
   final String? favorites;
   final String? speechPatterns;
   final String? birthday;
+  final String? relationships;
 
   UserProfile({
     this.name,
@@ -17,6 +18,7 @@ class UserProfile {
     this.favorites,
     this.speechPatterns,
     this.birthday,
+    this.relationships,
   });
 
   factory UserProfile.fromJson(Map<String, dynamic> json) {
@@ -29,6 +31,7 @@ class UserProfile {
       favorites: json['favorites'],
       speechPatterns: json['speech_patterns'],
       birthday: json['birthday'],
+      relationships: json['relationships'],
     );
   }
 
@@ -42,6 +45,7 @@ class UserProfile {
       'favorites': favorites,
       'speech_patterns': speechPatterns,
       'birthday': birthday,
+      'relationships': relationships,
     };
   }
 }

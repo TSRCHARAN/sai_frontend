@@ -10,6 +10,7 @@ class ChatHeader extends StatelessWidget {
   final Animation<double> animation;
   final VoidCallback onStopSpeaking;
   final VoidCallback onThemeToggle;
+  final VoidCallback? onTitleTap;
   
   // Colors
   final Color borderColor;
@@ -25,6 +26,7 @@ class ChatHeader extends StatelessWidget {
     required this.animation,
     required this.onStopSpeaking,
     required this.onThemeToggle,
+    this.onTitleTap,
     required this.borderColor,
     required this.backgroundColor,
     required this.textColor,
@@ -35,10 +37,10 @@ class ChatHeader extends StatelessWidget {
   Widget build(BuildContext context) {
     return Container(
       padding: EdgeInsets.only(
-        top: MediaQuery.of(context).padding.top + 16,
-        bottom: 16,
-        left: 24,
-        right: 24,
+        top: MediaQuery.of(context).padding.top + 12,
+        bottom: 12,
+        left: 16,
+        right: 16,
       ),
       decoration: BoxDecoration(
         border: Border(bottom: BorderSide(color: borderColor)),
@@ -56,35 +58,54 @@ class ChatHeader extends StatelessWidget {
               padding: EdgeInsets.zero,
               constraints: const BoxConstraints(),
             ),
-            const SizedBox(width: 16),
+            const SizedBox(width: 8),
           ],
-          Hero(
-            tag: 'sai_logo',
-            child: Container(
-              padding: const EdgeInsets.all(8),
-              decoration: BoxDecoration(
-                shape: BoxShape.circle,
-                border: Border.all(color: iconColor, width: 1.5),
+          
+          // Clickable Logo/Title Area
+          InkWell(
+            onTap: onTitleTap,
+            borderRadius: BorderRadius.circular(12),
+            child: Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 4.0, vertical: 4.0),
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Hero(
+                    tag: 'sai_logo',
+                    child: Container(
+                      padding: const EdgeInsets.all(6),
+                      decoration: BoxDecoration(
+                        shape: BoxShape.circle,
+                        border: Border.all(color: iconColor, width: 1.5),
+                      ),
+                      child: Icon(Icons.auto_awesome, color: iconColor, size: 18),
+                    ),
+                  ),
+                  const SizedBox(width: 10),
+                  Flexible(
+                    child: Hero(
+                      tag: 'sai_text',
+                      child: Material(
+                        color: Colors.transparent,
+                        child: Text(
+                          "S.AI",
+                          style: GoogleFonts.orbitron(
+                            color: textColor,
+                            fontSize: 18,
+                            fontWeight: FontWeight.bold,
+                            letterSpacing: 1.5,
+                          ),
+                          overflow: TextOverflow.fade,
+                          maxLines: 1,
+                        ),
+                      ),
+                    ),
+                  ),
+                ],
               ),
-              child: Icon(Icons.auto_awesome, color: iconColor, size: 20),
             ),
           ),
-          const SizedBox(width: 16),
-          Hero(
-            tag: 'sai_text',
-            child: Material(
-              color: Colors.transparent,
-              child: Text(
-                "S.AI",
-                style: GoogleFonts.orbitron(
-                  color: textColor,
-                  fontSize: 20,
-                  fontWeight: FontWeight.bold,
-                  letterSpacing: 2,
-                ),
-              ),
-            ),
-          ),
+          
           const Spacer(),
           if (isSpeaking)
             FadeTransition(
@@ -118,7 +139,7 @@ class ChatHeader extends StatelessWidget {
                 ),
               ),
             ),
-          if (sessionId == null)
+          // if (sessionId == null) <--- Removed checking for null session, show icons always
             FadeTransition(
               opacity: animation,
               child: Row(

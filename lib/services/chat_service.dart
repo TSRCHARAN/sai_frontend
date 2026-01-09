@@ -10,7 +10,18 @@ class ChatService {
   // Use 10.0.2.2 for Android Emulator, localhost for iOS/Web
   // For physical device, use your machine's local IP (e.g., 192.168.x.x)
   static String get baseUrl => dotenv.env['API_URL'] ?? "http://10.0.2.2:8000"; 
+  static String get apiKey => dotenv.env['API_SECRET'] ?? "";
+  
   final UserService _userService = UserService();
+  
+  Future<Map<String, String>> get _headers async {
+    final token = await _userService.getAuthToken();
+    return {
+      "Content-Type": "application/json",
+      "X-API-Key": apiKey,
+      if (token != null) "Authorization": "Bearer $token",
+    };
+  }
 
   Future<String> getUserId() => _userService.getUserId();
 
@@ -21,13 +32,14 @@ class ChatService {
     try {
       final response = await http.post(
         Uri.parse("$baseUrl/chat"),
-        headers: {"Content-Type": "application/json"},
+        headers: await _headers,
         body: jsonEncode({
           "user_id": userId,
           "session_id": effectiveSessionId,
           "message": message,
         }),
       );
+
 
       if (response.statusCode == 200) {
         return jsonDecode(response.body);
@@ -58,7 +70,7 @@ class ChatService {
     }
 
     final request = http.Request('POST', Uri.parse("$baseUrl/chat_stream"));
-    request.headers['Content-Type'] = 'application/json';
+    request.headers.addAll(await _headers);
     request.body = jsonEncode({
       "user_id": userId,
       "session_id": effectiveSessionId,
@@ -88,7 +100,7 @@ class ChatService {
     final effectiveSessionId = sessionId ?? await _userService.getSessionId();
 
     final request = http.Request('POST', Uri.parse("$baseUrl/welcome_stream"));
-    request.headers['Content-Type'] = 'application/json';
+    request.headers.addAll(await _headers);
     request.body = jsonEncode({
       "user_id": userId,
       "session_id": effectiveSessionId,
@@ -115,7 +127,10 @@ class ChatService {
   Future<List<Memory>> fetchMemories() async {
     final userId = await _userService.getUserId();
     try {
-      final response = await http.get(Uri.parse("$baseUrl/memories/$userId"));
+      final response = await http.get(
+        Uri.parse("$baseUrl/memories/$userId"),
+        headers: await _headers,
+      );
 
       if (response.statusCode == 200) {
         final data = jsonDecode(response.body);
@@ -131,7 +146,10 @@ class ChatService {
 
   Future<void> deleteMemory(int id) async {
     try {
-      final response = await http.delete(Uri.parse("$baseUrl/memories/$id"));
+      final response = await http.delete(
+        Uri.parse("$baseUrl/memories/$id"),
+        headers: await _headers,
+      );
 
       if (response.statusCode != 200) {
         throw Exception("Failed to delete memory: ${response.statusCode}");
@@ -145,7 +163,7 @@ class ChatService {
     try {
       final response = await http.put(
         Uri.parse("$baseUrl/memories/$id"),
-        headers: {"Content-Type": "application/json"},
+        headers: await _headers,
         body: jsonEncode({"content": content}),
       );
 
@@ -160,7 +178,10 @@ class ChatService {
   Future<UserProfile> fetchProfile() async {
     final userId = await _userService.getUserId();
     try {
-      final response = await http.get(Uri.parse("$baseUrl/profile/$userId"));
+      final response = await http.get(
+        Uri.parse("$baseUrl/profile/$userId"),
+        headers: await _headers,
+      );
 
       if (response.statusCode == 200) {
         final data = jsonDecode(response.body);
@@ -178,7 +199,7 @@ class ChatService {
     try {
       final response = await http.post(
         Uri.parse("$baseUrl/profile/$userId"),
-        headers: {"Content-Type": "application/json"},
+        headers: await _headers,
         body: jsonEncode(profile.toJson()),
       );
 
@@ -187,6 +208,81 @@ class ChatService {
       }
     } catch (e) {
       throw Exception("Network error: $e");
+    }
+  }
+
+  Future<void> logoutBackend(String sessionId) async {
+    final userId = await _userService.getUserId();
+    try {
+      await http.post(
+        Uri.parse("$baseUrl/auth/logout"),
+        headers: await _headers,
+        body: jsonEncode({
+          "user_id": userId,
+          "session_id": sessionId,
+        }),
+      );
+    } catch (e) {
+      // Fail silently if network is down during logout
+      print("Logout backend warning: $e");
+    }
+  }
+
+  Future<String> triggerTestNotification() async {
+    final userId = await _userService.getUserId();
+    try {
+      final response = await http.post(
+        Uri.parse("$baseUrl/test/notification"),
+        headers: await _headers,
+        body: jsonEncode({
+          "user_id": userId,
+        }),
+      );
+      
+      if (response.statusCode == 200) {
+        return "Notification Sent! Check Status Bar.";
+      } else {
+        return "Failed: ${response.body}";
+      }
+    } catch (e) {
+      return "Error: $e";
+    }
+  }
+
+  Future<void> deleteAccount(String sessionId) async {
+    final userId = await _userService.getUserId();
+    try {
+      final response = await http.delete(
+        Uri.parse("$baseUrl/auth/account"),
+        headers: await _headers,
+        body: jsonEncode({
+          "user_id": userId,
+          "session_id": sessionId,
+        }),
+      );
+      
+      if (response.statusCode != 200) {
+        throw Exception("Delete failed: ${response.statusCode}");
+      }
+    } catch (e) {
+      throw Exception("Could not delete account: $e");
+    }
+  }
+
+  Future<Map<String, dynamic>> fetchPrivacyPolicy() async {
+    try {
+      final response = await http.get(
+        Uri.parse("$baseUrl/privacy-policy"),
+      );
+
+      if (response.statusCode == 200) {
+        // Return UTF-8 decoded body to support special chars
+        return jsonDecode(utf8.decode(response.bodyBytes));
+      } else {
+        return {};
+      }
+    } catch (e) {
+      return {};
     }
   }
 }
