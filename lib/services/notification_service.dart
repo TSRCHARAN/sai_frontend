@@ -33,7 +33,7 @@ class NotificationService {
     try {
       tz.initializeTimeZones();
     } catch (e) {
-      print("Timezone init error: $e");
+      // debugPrint("Timezone init error: $e");
     }
 
     NotificationSettings settings = await _firebaseMessaging.requestPermission(
@@ -44,7 +44,7 @@ class NotificationService {
     );
 
     if (settings.authorizationStatus != AuthorizationStatus.authorized) {
-      print('User declined notification permission');
+      // debugPrint('User declined notification permission');
       // Continue anyway to allow local notifications
     }
 
@@ -90,11 +90,11 @@ class NotificationService {
              String? token = await _firebaseMessaging.getToken();
              if (token != null) await _sendTokenToBackend(token);
           } catch (e) {
-             print("Web FCM Token skip: $e");
+             // debugPrint("Web FCM Token skip: $e");
           }
       }
     } catch (e) {
-      print("FCM Token Error: $e");
+      // debugPrint("FCM Token Error: $e");
     }
 
     _isInitialized = true;
@@ -141,7 +141,7 @@ class NotificationService {
       dynamic tzResult = await FlutterTimezone.getLocalTimezone();
       timezone = tzResult.toString();
     } catch (e) {
-      print("Failed to get timezone: $e");
+      // debugPrint("Failed to get timezone: $e");
     }
     
     try {
@@ -154,9 +154,9 @@ class NotificationService {
           "timezone": timezone
         }),
       );
-      print("FCM Token synced to server.");
+      // debugPrint("FCM Token synced to server.");
     } catch (e) {
-      print("Failed to sync FCM token: $e");
+      // debugPrint("Failed to sync FCM token: $e");
     }
   }
 
@@ -199,7 +199,7 @@ class NotificationService {
                 payload: body
             );
         });
-        print("Scheduled (Timer) notification $id in ${delay.inSeconds}s");
+        // debugPrint("Scheduled (Timer) notification $id in ${delay.inSeconds}s");
     }
   }
 
@@ -213,7 +213,7 @@ class NotificationService {
             scheduledTime: targetTime,
         );
     } catch (e) {
-        print("Failed to schedule from backend: $e");
+        // debugPrint("Failed to schedule from backend: $e");
     }
   }
 }

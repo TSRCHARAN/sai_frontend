@@ -38,16 +38,16 @@ class _SplashScreenState extends State<SplashScreen> with SingleTickerProviderSt
 
     _controller = AnimationController(
       vsync: this,
-      duration: const Duration(milliseconds: 1500),
+      duration: const Duration(milliseconds: 1000), // Faster animation (1s)
     );
 
     // Logo slides in from the Left
     _logoSlide = Tween<Offset>(
-      begin: const Offset(-2.0, 0.0), // Reduced distance for tighter feel
+      begin: const Offset(-2.0, 0.0), 
       end: Offset.zero,
     ).animate(CurvedAnimation(
       parent: _controller,
-      curve: Curves.easeOutExpo, // Professional, non-bouncy
+      curve: Curves.easeOutExpo, 
     ));
 
     // Text slides in from the Right
@@ -61,8 +61,8 @@ class _SplashScreenState extends State<SplashScreen> with SingleTickerProviderSt
 
     _controller.forward();
 
-    // Wait for animation (1.5s) + pause (1.5s) = 3s total before flying
-    Timer(const Duration(seconds: 3), () {
+    // Wait for animation (1.0s) + pause (0.5s) = 1.5s total before flying
+    Timer(const Duration(milliseconds: 1500), () {
       Navigator.of(context).pushReplacement(
         PageRouteBuilder(
           transitionDuration: const Duration(milliseconds: 1000),
@@ -113,12 +113,14 @@ class _SplashScreenState extends State<SplashScreen> with SingleTickerProviderSt
                 child: Hero(
                   tag: 'sai_logo',
                   child: Container(
-                    padding: const EdgeInsets.all(12), // Slightly larger in splash
-                    decoration: BoxDecoration(
+                    width: 54,
+                    height: 54,
+                    decoration: const BoxDecoration(
                       shape: BoxShape.circle,
-                      border: Border.all(color: _iconColor, width: 2.0),
                     ),
-                    child: Icon(Icons.auto_awesome, color: _iconColor, size: 30),
+                    child: ClipOval(
+                      child: Image.asset("assets/icon/app_icon.png", fit: BoxFit.cover),
+                    ),
                   ),
                 ),
               ),

@@ -3,6 +3,7 @@ import 'package:flutter_dotenv/flutter_dotenv.dart';
 import 'package:firebase_core/firebase_core.dart';
 import 'package:firebase_messaging/firebase_messaging.dart';
 import 'package:firebase_crashlytics/firebase_crashlytics.dart';
+import 'package:google_fonts/google_fonts.dart';
 import 'dart:async';
 import 'screens/splash_screen.dart';
 import 'services/notification_service.dart';
@@ -50,9 +51,22 @@ class SaiApp extends StatelessWidget {
     return MaterialApp(
       title: 'S.AI',
       theme: ThemeData(
-        primarySwatch: Colors.blue,
         useMaterial3: true,
+        colorScheme: ColorScheme.fromSeed(
+          seedColor: const Color(0xFF6200EE), // Main Brand Color
+          brightness: Brightness.light,
+        ),
+        textTheme: GoogleFonts.outfitTextTheme(), // Production Grade Font
       ),
+      darkTheme: ThemeData(
+        useMaterial3: true,
+        colorScheme: ColorScheme.fromSeed(
+          seedColor: const Color(0xFFBB86FC), 
+          brightness: Brightness.dark,
+        ),
+        textTheme: GoogleFonts.outfitTextTheme(ThemeData.dark().textTheme),
+      ),
+      themeMode: ThemeMode.system,
       home: const SplashScreen(),
       debugShowCheckedModeBanner: false,
     );

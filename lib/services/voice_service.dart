@@ -50,13 +50,13 @@ class VoiceService {
       });
       
       _flutterTts.setErrorHandler((msg) {
-         debugPrint("TTS Error: $msg");
+         // debugPrint("TTS Error: $msg");
          _isSpeakingController.add(false);
          _stopTtsVisualizer();
       });
 
     } catch (e) {
-      debugPrint("VoiceService init error: $e");
+      // debugPrint("VoiceService init error: $e");
     }
   }
 
@@ -99,7 +99,7 @@ class VoiceService {
             debugLogging: true,
         );
       } catch (e) {
-          debugPrint("STT Init Error: $e");
+          // debugPrint("STT Init Error: $e");
           _speechEnabled = false;
       }
       return _speechEnabled;
@@ -127,7 +127,7 @@ class VoiceService {
       await stop(); // Stop speaking before listening
       
       if (!_speechEnabled) {
-          debugPrint("Cannot start listening: Speech not enabled");
+          // debugPrint("Cannot start listening: Speech not enabled");
           return;
       }
 
@@ -150,7 +150,7 @@ class VoiceService {
         );
         _isListeningController.add(true);
       } catch (e) {
-          debugPrint("Start listening error: $e");
+          // debugPrint("Start listening error: $e");
           _isListeningController.add(false);
       }
   }

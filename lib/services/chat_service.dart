@@ -66,7 +66,7 @@ class ChatService {
         timezoneName = timezoneObj.identifier;
       }
     } catch (e) {
-      print("Timezone fetch error: $e");
+      // debugPrint("Timezone fetch error: $e");
     }
 
     final request = http.Request('POST', Uri.parse("$baseUrl/chat_stream"));

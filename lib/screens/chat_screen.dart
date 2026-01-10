@@ -28,8 +28,9 @@ class ChatBackground extends StatelessWidget {
   Widget build(BuildContext context) {
     final bgStart = isDarkMode ? const Color(0xFF0F172A) : const Color(0xFFF8FAFC);
     final bgEnd = isDarkMode ? const Color(0xFF1E293B) : const Color(0xFFE2E8F0);
-    final glowColor1 = isDarkMode ? const Color(0xFF3B82F6) : const Color(0xFF60A5FA);
-    final glowColor2 = isDarkMode ? const Color(0xFF8B5CF6) : const Color(0xFFA78BFA);
+    // Dark mode: Use very subtle deep colors, not bright neon
+    final glowColor1 = isDarkMode ? const Color(0xFF1A1A40) : const Color(0xFF60A5FA);
+    final glowColor2 = isDarkMode ? const Color(0xFF2D1B4E) : const Color(0xFFA78BFA);
 
     return Stack(
       children: [
@@ -60,7 +61,8 @@ class ChatBackground extends StatelessWidget {
   }
 
   Widget _buildGlowOrb(Color color, bool isDark) {
-    final double opacity = isDark ? 0.15 : 0.08;
+    // Dark mode: Much lower opacity to avoid "weird blue fog" look
+    final double opacity = isDark ? 0.04 : 0.08;
     final double blur = isDark ? 100 : 150;
     
     return Container(

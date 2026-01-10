@@ -73,12 +73,17 @@ class ChatHeader extends StatelessWidget {
                   Hero(
                     tag: 'sai_logo',
                     child: Container(
-                      padding: const EdgeInsets.all(6),
-                      decoration: BoxDecoration(
+                      width: 38,
+                      height: 38,
+                      decoration: const BoxDecoration(
                         shape: BoxShape.circle,
-                        border: Border.all(color: iconColor, width: 1.5),
                       ),
-                      child: Icon(Icons.auto_awesome, color: iconColor, size: 18),
+                      child: ClipOval(
+                        child: Image.asset(
+                          "assets/icon/app_icon.png",
+                          fit: BoxFit.cover,
+                        ),
+                      ),
                     ),
                   ),
                   const SizedBox(width: 10),

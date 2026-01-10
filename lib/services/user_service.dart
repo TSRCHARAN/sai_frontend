@@ -1,3 +1,4 @@
+import 'package:flutter/foundation.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:uuid/uuid.dart';
 import 'package:google_sign_in/google_sign_in.dart';
@@ -67,9 +68,9 @@ class UserService {
       if (guestId != null && guestId != googleId) {
           try {
              await _mergeAccounts(guestId, googleId);
-             print("Merged guest $guestId into google $googleId");
+             debugPrint("Merged guest $guestId into google $googleId");
           } catch(e) {
-             print("Merge failed (non-fatal): $e");
+             debugPrint("Merge failed (non-fatal): $e");
           }
           
           // 4. Clear Guest ID to prevent "falling back" to it later

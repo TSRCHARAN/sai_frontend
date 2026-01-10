@@ -471,20 +471,30 @@ class _ProfileScreenState extends State<ProfileScreen> {
                       ),
                       child: Row(
                         children: [
-                           const Expanded(
+                           Expanded(
                              child: Column(
                                crossAxisAlignment: CrossAxisAlignment.start,
                                children: [
-                                 Text("Teach S.AI who you are", style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
-                                 SizedBox(height: 4),
+                                 Text(
+                                   "Teach S.AI who you are", 
+                                   style: TextStyle(
+                                     fontWeight: FontWeight.bold, 
+                                     fontSize: 16,
+                                     color: _isDarkMode ? Colors.white : Colors.deepPurple.shade900
+                                   )
+                                 ),
+                                 const SizedBox(height: 4),
                                  Text(
                                    "The more you share, the better your assistant becomes at predicting your needs.",
-                                   style: TextStyle(fontSize: 12),
+                                   style: TextStyle(
+                                     fontSize: 12,
+                                     color: _isDarkMode ? Colors.white70 : Colors.deepPurple.shade700
+                                   ),
                                  )
                                ],
                              )
                            ),
-                           Icon(Icons.auto_awesome, color: _isDarkMode ? Colors.white70 : Colors.deepPurple, size: 30)
+                           Image.asset("assets/icon/app_icon.png", width: 30, height: 30)
                         ],
                       ),
                     ),
@@ -515,7 +525,10 @@ class _ProfileScreenState extends State<ProfileScreen> {
                               const SizedBox(width: 8),
                               Text(
                                 _currentUser != null ? "Account Synced" : "Guest Mode",
-                                style: const TextStyle(fontWeight: FontWeight.bold),
+                                style: TextStyle(
+                                  fontWeight: FontWeight.bold,
+                                  color: _isDarkMode ? Colors.white : Colors.black87
+                                ),
                               ),
                               const Spacer(),
                               if (_currentUser != null)
